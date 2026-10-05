@@ -8,14 +8,16 @@
     - vars/cis.yml
 
   pre_tasks:
-    - name: Prepare AIDE before the CIS role initializes its first database
+    - name: Prepare AIDE and auditd before the CIS role initializes
       when: not (audit_only | default(false) | bool)
       block:
-        - name: Install AIDE without optional mail-server packages
+        - name: Install AIDE and auditd packages
           ansible.builtin.apt:
             name:
               - aide
               - aide-common
+              - auditd
+              - audispd-plugins
             state: present
             update_cache: true
             install_recommends: false
