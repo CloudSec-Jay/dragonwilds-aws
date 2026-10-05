@@ -47,7 +47,7 @@ jobs:
 
       - name: Run ShellCheck
         run: |
-          shellcheck files/dragonwilds-bootstrap.sh
+          shellcheck ansible/files/dragonwilds-bootstrap.sh
 
       - name: Validate Packer templates
         run: |
@@ -59,7 +59,7 @@ jobs:
 
       - name: Run yamllint
         run: |
-          yamllint -d "{extends: default, rules: {line-length: {max: 160}, document-start: disable}}" ansible/ files/
+          yamllint -d "{extends: default, rules: {line-length: {max: 160}, document-start: disable}}" ansible/ .github/
 
       - name: Run cfn-lint
         run: |
@@ -68,6 +68,15 @@ jobs:
       - name: Run ansible-lint
         run: |
           ansible-lint ansible/image.yml
+
+      - name: Run Trivy Security & IaC Scan
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          scanners: 'misconfig,secret'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
 
   detect-changes:
     name: Determine Build Type
@@ -99,8 +108,14 @@ jobs:
             exit 0
           fi
 
-          # Auto-detection based on git diff against previous commit
-          CHANGED_HARDENING=$(git diff --name-only HEAD~1 HEAD | grep -E "^(ansible/harden\.yml|ansible/vars/cis\.yml|ansible/requirements\.yml|packer/dragonwilds\.pkr\.hcl)" || true)
+          # Safe change detection (handles initial commit where HEAD~1 does not exist)
+          if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+            PATTERN="^(ansible/harden\.yml|ansible/vars/cis\.yml|ansible/requirements\.yml|packer/dragonwilds\.pkr\.hcl)"
+            CHANGED_HARDENING=$(git diff --name-only HEAD~1 HEAD | grep -E "$PATTERN" || true)
+          else
+            echo "Initial commit or no parent revision found; defaulting to fast build."
+            CHANGED_HARDENING=""
+          fi
 
           if [ -n "$CHANGED_HARDENING" ]; then
             echo "Detected hardening changes: $CHANGED_HARDENING"

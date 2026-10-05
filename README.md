@@ -43,16 +43,16 @@ Runtime Stack
 │   ├── requirements.yml               # Pinned ansible-lockdown dependencies
 │   ├── vars/
 │   │   └── cis.yml                    # CIS benchmark overrides
-│   └── roles/
-│       └── ubuntu24_cis/              # Pinned UBUNTU24-CIS role
+│   ├── roles/
+│   │   └── ubuntu24_cis/              # Pinned UBUNTU24-CIS role
+│   └── files/
+│       ├── dragonwilds.container          # Podman Quadlet unit file (zero-dependency health check)
+│       ├── dragonwilds-bootstrap.service  # Reboot-safe volume mount & secret injection
+│       ├── dragonwilds-bootstrap.sh       # NVMe EBS dynamic attachment & secret retrieval
+│       ├── falco-dragonwilds.yaml         # Falco JSON file output & rule whitelist
+│       └── falco-dragonwilds-rules.yaml   # Custom Falco security rules (tampering, sudo, auth, etc.)
 ├── cloudformation/
 │   └── server.yaml                    # VPC, EC2, IAM, EBS, UFW routing, CloudWatch Agent
-├── files/
-│   ├── dragonwilds.container          # Podman Quadlet unit file (zero-dependency health check)
-│   ├── dragonwilds-bootstrap.service  # Reboot-safe volume mount & secret injection
-│   ├── dragonwilds-bootstrap.sh       # NVMe EBS dynamic attachment & secret retrieval
-│   ├── falco-dragonwilds.yaml         # Falco JSON file output & rule whitelist
-│   └── falco-dragonwilds-rules.yaml   # Custom Falco security rules (tampering, sudo, auth, etc.)
 └── packer/
     ├── dragonwilds.pkr.hcl            # Full production AMI build (CIS + runtime, ~25m)
     ├── dragonwilds-update.pkr.hcl     # Fast incremental build on base AMI (~90s)
