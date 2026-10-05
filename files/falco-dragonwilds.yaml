@@ -1,0 +1,45 @@
+---
+# Keep Falco alerts machine-readable JSON and route to /var/log/falco_alerts.json
+# for automated CloudWatch Agent collection.
+json_output: true
+priority: notice
+
+rules_files:
+  - /etc/falco/rules.d
+
+stdout_output:
+  enabled: true
+
+syslog_output:
+  enabled: true
+
+file_output:
+  enabled: true
+  keep_alive: false
+  filename: /var/log/falco_alerts.json
+
+rules:
+  - disable:
+      rule: "*"
+
+  # Custom Dragonwilds security rules
+  - enable:
+      rule: Dragonwilds data directory modified
+  - enable:
+      rule: Sudo execution
+  - enable:
+      rule: Authentication attempt failed
+  - enable:
+      rule: Use of chattr
+  - enable:
+      rule: Use of Python
+
+  # Base Falco detection rules
+  - enable:
+      rule: Terminal shell in container
+  - enable:
+      rule: Clear Log Activities
+  - enable:
+      rule: Redirect STDOUT/STDIN to Network Connection in Container
+  - enable:
+      rule: Drop and execute new binary in container

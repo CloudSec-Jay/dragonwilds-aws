@@ -1,0 +1,181 @@
+name: CI/CD Pipeline
+
+'on':
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Monthly re-bake on the 1st of every month at 00:00 UTC
+    - cron: '0 0 1 * *'
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Bake mode'
+        required: true
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - fast
+          - master
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+jobs:
+  lint:
+    name: Lint & Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Linters & Ansible
+        run: |
+          pip install cfn-lint ansible-lint yamllint ansible
+          ansible-galaxy install -r ansible/requirements.yml
+
+      - name: Set up Packer
+        uses: hashicorp/setup-packer@main
+
+      - name: Run ShellCheck
+        run: |
+          shellcheck files/dragonwilds-bootstrap.sh
+
+      - name: Validate Packer templates
+        run: |
+          packer fmt -check packer/
+          packer init packer/dragonwilds-update.pkr.hcl
+          packer validate -var "base_ami_id=ami-12345678" packer/dragonwilds-update.pkr.hcl
+          packer init packer/dragonwilds.pkr.hcl
+          packer validate packer/dragonwilds.pkr.hcl
+
+      - name: Run yamllint
+        run: |
+          yamllint -d "{extends: default, rules: {line-length: {max: 160}, document-start: disable}}" ansible/ files/
+
+      - name: Run cfn-lint
+        run: |
+          cfn-lint cloudformation/server.yaml
+
+      - name: Run ansible-lint
+        run: |
+          ansible-lint ansible/image.yml
+
+  detect-changes:
+    name: Determine Build Type
+    needs: lint
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      run_master: ${{ steps.check.outputs.run_master }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check for hardening changes
+        id: check
+        run: |
+          # If manually requested 'master' or scheduled monthly run
+          if [ "${{ github.event.inputs.build_type }}" = "master" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "Selected Full Master Build."
+            echo "run_master=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # If manually requested 'fast'
+          if [ "${{ github.event.inputs.build_type }}" = "fast" ]; then
+            echo "Selected Fast Update Build."
+            echo "run_master=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Auto-detection based on git diff against previous commit
+          CHANGED_HARDENING=$(git diff --name-only HEAD~1 HEAD | grep -E "^(ansible/harden\.yml|ansible/vars/cis\.yml|ansible/requirements\.yml|packer/dragonwilds\.pkr\.hcl)" || true)
+
+          if [ -n "$CHANGED_HARDENING" ]; then
+            echo "Detected hardening changes: $CHANGED_HARDENING"
+            echo "run_master=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Only application/runtime changes detected. Running fast build."
+            echo "run_master=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  bake-and-deploy:
+    name: Bake AMI & Deploy
+    needs: [lint, detect-changes]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Ansible Dependencies
+        run: |
+          pip install ansible
+          ansible-galaxy install -r ansible/requirements.yml
+
+      - name: Set up Packer
+        uses: hashicorp/setup-packer@main
+
+      # Branch A: Full Master Build (~25m)
+      - name: Bake Full Master AMI (CIS Hardened)
+        if: ${{ needs.detect-changes.outputs.run_master == 'true' }}
+        id: master-build
+        run: |
+          packer init packer/dragonwilds.pkr.hcl
+          packer build \
+            -var "aws_region=${{ secrets.AWS_REGION || 'us-east-1' }}" \
+            packer/dragonwilds.pkr.hcl
+          NEW_AMI=$(jq -r '.builds[-1].artifact_id' packer/manifest.json | cut -d':' -f2)
+          echo "ami_id=$NEW_AMI" >> "$GITHUB_OUTPUT"
+
+      # Branch B: Fast Layered Build (~90s)
+      - name: Bake Fast Update AMI (Layered)
+        if: ${{ needs.detect-changes.outputs.run_master == 'false' }}
+        id: fast-build
+        run: |
+          packer init packer/dragonwilds-update.pkr.hcl
+          packer build \
+            -var "base_ami_id=${{ secrets.BASE_AMI_ID }}" \
+            -var "aws_region=${{ secrets.AWS_REGION || 'us-east-1' }}" \
+            packer/dragonwilds-update.pkr.hcl
+          NEW_AMI=$(jq -r '.builds[-1].artifact_id' packer/manifest.json | cut -d':' -f2)
+          echo "ami_id=$NEW_AMI" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy CloudFormation Stack
+        run: |
+          TARGET_AMI="${{ steps.master-build.outputs.ami_id || steps.fast-build.outputs.ami_id }}"
+          echo "Deploying CloudFormation stack with AMI: $TARGET_AMI"
+          aws cloudformation deploy \
+            --template-file cloudformation/server.yaml \
+            --stack-name dragonwilds \
+            --parameter-overrides \
+              AmiId="$TARGET_AMI" \
+              ServerSecretArn="${{ secrets.SERVER_SECRET_ARN }}" \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset

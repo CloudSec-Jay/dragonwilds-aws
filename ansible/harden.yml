@@ -1,0 +1,13 @@
+---
+- name: Harden the Dragonwilds ubuntu image
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - vars/cis.yml
+
+  tasks:
+    - name: Apply the Ubuntu CIS hardening role
+      ansible.builtin.import_role:
+        name: ubuntu24_cis

@@ -1,0 +1,14 @@
+---
+roles:
+  - name: ubuntu24_cis
+    src: https://github.com/ansible-lockdown/UBUNTU24-CIS.git
+    scm: git
+    version: "bfadae19d51d08e406c2c9327e3c8e510ee49cd7" # Release 1.7.0
+
+collections:
+  - name: community.general
+    version: "13.4.0"
+  - name: community.crypto
+    version: "3.5.0"
+  - name: ansible.posix
+    version: "2.2.2"

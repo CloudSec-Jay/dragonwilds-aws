@@ -1,0 +1,650 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Complete infrastructure for the Dragonwilds dedicated server
+
+Parameters:
+  ProjectName:
+    Type: String
+    Description: Project name used for resource naming and tags
+    Default: dragonwilds
+    MaxLength: 20
+    AllowedPattern: ^[a-zA-Z0-9-]+$
+
+  Environment:
+    Type: String
+    Description: Deployment environment
+    Default: production
+    AllowedValues:
+      - development
+      - test
+      - production
+
+  VpcCidr:
+    Type: String
+    Description: IPv4 CIDR for the Dragonwilds VPC
+    Default: 10.42.0.0/16
+
+  PublicSubnetCidr:
+    Type: String
+    Description: IPv4 CIDR for the public server subnet
+    Default: 10.42.1.0/24
+
+  AllowedGameCidr:
+    Type: String
+    Description: IPv4 CIDR allowed to reach the public game ports
+    Default: 0.0.0.0/0
+
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Description: Hardened Dragonwilds AMI created by Packer
+
+  InstanceType:
+    Type: String
+    Description: EC2 instance type for the game server
+    Default: t3.medium
+
+  RootVolumeSize:
+    Type: Number
+    Description: Root volume size in GiB
+    Default: 20
+    MinValue: 10
+
+  DataVolumeSize:
+    Type: Number
+    Description: Persistent world-data volume size in GiB
+    Default: 30
+    MinValue: 10
+
+  ServerSecretArn:
+    Type: String
+    Description: ARN of a Secrets Manager secret containing the required RSDW variables
+
+  LogRetentionDays:
+    Type: Number
+    Description: Number of days to retain server system logs
+    Default: 30
+    AllowedValues:
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+
+  BackupRetentionDays:
+    Type: Number
+    Description: Number of days to retain daily world-data backups
+    Default: 14
+    MinValue: 7
+
+  AlarmEmail:
+    Type: String
+    Description: Optional email address for operational alarms
+    Default: ''
+
+Conditions:
+  HasAlarmEmail: !Not
+    - !Equals
+      - !Ref AlarmEmail
+      - ''
+
+Resources:
+  DragonwildsVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-vpc
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-igw
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref DragonwildsVpc
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs ''
+      CidrBlock: !Ref PublicSubnetCidr
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref DragonwildsVpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-public-subnet
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref DragonwildsVpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-public-routes
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet
+
+  DragonwildsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Dragonwilds server firewall
+      VpcId: !Ref DragonwildsVpc
+
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-server-sg
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+      SecurityGroupIngress:
+        - Description: Dragonwilds game traffic
+          IpProtocol: udp
+          FromPort: 7777
+          ToPort: 7777
+          CidrIp: !Ref AllowedGameCidr
+
+        - Description: Dragonwilds beacon traffic
+          IpProtocol: udp
+          FromPort: 8888
+          ToPort: 8888
+          CidrIp: !Ref AllowedGameCidr
+
+      SecurityGroupEgress:
+        - Description: Permit outbound traffic
+          IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  DragonwildsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /${ProjectName}/${Environment}/system
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  DragonwildsAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Dragonwilds server alerts
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  DragonwildsAlarmEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      Endpoint: !Ref AlarmEmail
+      Protocol: email
+      TopicArn: !Ref DragonwildsAlertsTopic
+
+  DragonwildsInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: DragonwildsRuntimeAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadServerSecret
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref ServerSecretArn
+              - Sid: PublishCloudWatchMetrics
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: CWAgent
+              - Sid: PublishSystemLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DragonwildsLogGroup}:*
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  DragonwildsInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref DragonwildsInstanceRole
+
+  DragonwildsDataVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AvailabilityZone: !GetAtt PublicSubnet.AvailabilityZone
+      Encrypted: true
+      Size: !Ref DataVolumeSize
+      VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-world-data
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  DragonwildsBackupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - backup.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  DragonwildsBackupVault:
+    Type: AWS::Backup::BackupVault
+    Properties:
+      BackupVaultName: !Sub ${ProjectName}-${Environment}-backup-vault
+      BackupVaultTags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: CloudFormation
+
+  DragonwildsBackupPlan:
+    Type: AWS::Backup::BackupPlan
+    Properties:
+      BackupPlan:
+        BackupPlanName: !Sub ${ProjectName}-${Environment}-daily
+        BackupPlanRule:
+          - RuleName: DailyWorldDataBackup
+            TargetBackupVault: !Ref DragonwildsBackupVault
+            ScheduleExpression: cron(0 5 * * ? *)
+            StartWindowMinutes: 60
+            CompletionWindowMinutes: 180
+            Lifecycle:
+              DeleteAfterDays: !Ref BackupRetentionDays
+      BackupPlanTags:
+        Project: !Ref ProjectName
+        Environment: !Ref Environment
+        ManagedBy: CloudFormation
+
+  DragonwildsBackupSelection:
+    Type: AWS::Backup::BackupSelection
+    Properties:
+      BackupPlanId: !Ref DragonwildsBackupPlan
+      BackupSelection:
+        SelectionName: !Sub ${ProjectName}-${Environment}-world-data
+        IamRoleArn: !GetAtt DragonwildsBackupRole.Arn
+        Resources:
+          - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/${DragonwildsDataVolume}
+
+  DragonwildsInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: DefaultPublicRoute
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref DragonwildsInstanceProfile
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !GetAtt DragonwildsSecurityGroup.GroupId
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
+        InstanceMetadataTags: disabled
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            DeleteOnTermination: true
+            Encrypted: true
+            VolumeSize: !Ref RootVolumeSize
+            VolumeType: gp3
+      UserData: !Base64
+        Fn::Sub: |
+          #!/usr/bin/bash
+          set -euo pipefail
+
+          install -d -o root -g root -m 0700 /etc/dragonwilds
+          cat > /etc/dragonwilds/bootstrap.env <<'BOOTSTRAP_ENV'
+          AWS_REGION='${AWS::Region}'
+          DATA_VOLUME_ID='${DragonwildsDataVolume}'
+          SERVER_SECRET_ARN='${ServerSecretArn}'
+          BOOTSTRAP_ENV
+          chmod 0600 /etc/dragonwilds/bootstrap.env
+
+          ufw default deny incoming
+          ufw default allow outgoing
+          ufw allow 7777/udp
+          ufw allow 8888/udp
+          ufw route allow 7777/udp
+          ufw route allow 8888/udp
+          ufw --force enable
+
+          cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CWAGENT_CONFIG'
+          {
+            "agent": {
+              "metrics_collection_interval": 60,
+              "run_as_user": "root"
+            },
+            "metrics": {
+              "namespace": "CWAgent",
+              "append_dimensions": {
+                "InstanceId": "${!aws:InstanceId}"
+              },
+              "metrics_collected": {
+                "disk": {
+                  "measurement": ["used_percent"],
+                  "metrics_collection_interval": 60,
+                  "resources": ["/", "/srv/dragonwilds"]
+                },
+                "mem": {
+                  "measurement": ["mem_used_percent"],
+                  "metrics_collection_interval": 60
+                }
+              }
+            },
+            "logs": {
+              "logs_collected": {
+                "files": {
+                  "collect_list": [
+                    {
+                      "file_path": "/var/log/syslog",
+                      "log_group_name": "${DragonwildsLogGroup}",
+                      "log_stream_name": "{instance_id}/syslog"
+                    },
+                    {
+                      "file_path": "/var/log/cloud-init-output.log",
+                      "log_group_name": "${DragonwildsLogGroup}",
+                      "log_stream_name": "{instance_id}/cloud-init"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+          CWAGENT_CONFIG
+
+          systemctl enable amazon-ssm-agent.service
+          systemctl daemon-reload
+          systemctl enable dragonwilds-bootstrap.service
+          /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+            -a fetch-config -m ec2 -s \
+            -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+          systemctl start --no-block dragonwilds-bootstrap.service dragonwilds.service
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-server
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  DragonwildsDataVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      Device: /dev/sdf
+      InstanceId: !Ref DragonwildsInstance
+      VolumeId: !Ref DragonwildsDataVolume
+
+  DragonwildsElasticIp:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-eip
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  DragonwildsElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt DragonwildsElasticIp.AllocationId
+      InstanceId: !Ref DragonwildsInstance
+
+  DragonwildsStatusCheckAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Dragonwilds EC2 instance failed a system or instance status check
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref DragonwildsInstance
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref DragonwildsAlertsTopic
+      OKActions:
+        - !Ref DragonwildsAlertsTopic
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  DragonwildsHighCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Dragonwilds EC2 CPU has remained above 85 percent
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref DragonwildsInstance
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 3
+      Threshold: 85
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DragonwildsAlertsTopic
+      OKActions:
+        - !Ref DragonwildsAlertsTopic
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  DragonwildsHighMemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Dragonwilds EC2 memory has remained above 90 percent
+      Namespace: CWAgent
+      MetricName: mem_used_percent
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref DragonwildsInstance
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 3
+      Threshold: 90
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DragonwildsAlertsTopic
+      OKActions:
+        - !Ref DragonwildsAlertsTopic
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  DragonwildsServiceFailureMetric:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref DragonwildsLogGroup
+      FilterName: !Sub ${ProjectName}-${Environment}-service-failures
+      FilterPattern: '"dragonwilds.service" "Failed"'
+      MetricTransformations:
+        - MetricNamespace: Dragonwilds
+          MetricName: ServiceFailures
+          MetricValue: '1'
+          DefaultValue: 0
+
+  DragonwildsServiceFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: The Dragonwilds systemd service reported a failure
+      Namespace: Dragonwilds
+      MetricName: ServiceFailures
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DragonwildsAlertsTopic
+      OKActions:
+        - !Ref DragonwildsAlertsTopic
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  VpcId:
+    Description: ID of the Dragonwilds VPC
+    Value: !Ref DragonwildsVpc
+
+  PublicSubnetId:
+    Description: ID of the public server subnet
+    Value: !Ref PublicSubnet
+
+  SecurityGroupId:
+    Description: ID of the Dragonwilds server security group
+    Value: !GetAtt DragonwildsSecurityGroup.GroupId
+
+  InstanceId:
+    Description: ID of the Dragonwilds EC2 instance
+    Value: !Ref DragonwildsInstance
+
+  PublicIp:
+    Description: Elastic IPv4 address for the Dragonwilds server
+    Value: !Ref DragonwildsElasticIp
+
+  DataVolumeId:
+    Description: Retained EBS volume containing the Dragonwilds world data
+    Value: !Ref DragonwildsDataVolume
+
+  LogGroupName:
+    Description: CloudWatch Logs group for server system logs
+    Value: !Ref DragonwildsLogGroup
+
+  AlertsTopicArn:
+    Description: SNS topic used for operational alarms
+    Value: !Ref DragonwildsAlertsTopic
+
+  BackupVaultName:
+    Description: AWS Backup vault containing world-data recovery points
+    Value: !Ref DragonwildsBackupVault

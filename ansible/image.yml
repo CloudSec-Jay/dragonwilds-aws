@@ -1,0 +1,277 @@
+---
+- name: Prepare the Dragonwilds Ubuntu image
+  hosts: all
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Require Ubuntu 24.04 on x86_64
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == "Ubuntu"
+          - ansible_facts['distribution_version'] == "24.04"
+          - ansible_facts['architecture'] == "x86_64"
+        fail_msg: "This role requires Ubuntu 24.04 on x86_64"
+        success_msg: "Ubuntu 24.04 on x86_64 is installed"
+
+  tasks:
+    - name: Install Podman and other runtime dependencies
+      ansible.builtin.apt:
+        name:
+          - podman
+          - jq
+          - ufw
+          - ca-certificates
+          - apparmor
+          - apparmor-utils
+          - gnupg
+          - unzip
+          - curl
+        state: present
+        update_cache: true
+
+    - name: Download the Falco repository signing key
+      ansible.builtin.get_url:
+        url: https://falco.org/repo/falcosecurity-packages.asc
+        dest: /tmp/falcosecurity-packages.asc
+        mode: "0644"
+
+    - name: Install the Falco repository signing key
+      ansible.builtin.command:
+        argv:
+          - gpg
+          - --dearmor
+          - --output
+          - /usr/share/keyrings/falco-archive-keyring.gpg
+          - /tmp/falcosecurity-packages.asc
+        creates: /usr/share/keyrings/falco-archive-keyring.gpg
+
+    - name: Make the Falco repository signing key readable by APT
+      ansible.builtin.file:
+        path: /usr/share/keyrings/falco-archive-keyring.gpg
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Configure the Falco apt repository
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/falcosecurity.list
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          deb [signed-by=/usr/share/keyrings/falco-archive-keyring.gpg] https://download.falco.org/packages/deb stable main
+
+    - name: Install Falco with the modern eBPF driver
+      ansible.builtin.apt:
+        name: falco
+        state: present
+        update_cache: true
+        policy_rc_d: 101
+      environment:
+        FALCO_FRONTEND: noninteractive
+        FALCO_DRIVER_CHOICE: modern_ebpf
+
+    - name: Configure Falco alert output
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/falco-dragonwilds.yaml"
+        dest: /etc/falco/config.d/dragonwilds.yaml
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Install the Dragonwilds Falco data-directory rule
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/falco-dragonwilds-rules.yaml"
+        dest: /etc/falco/rules.d/dragonwilds-data.yaml
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Enable Falco with the modern eBPF driver
+      ansible.builtin.systemd_service:
+        name: falco-modern-bpf.service
+        enabled: true
+        state: stopped
+        daemon_reload: true
+
+    - name: Read Falco service state
+      ansible.builtin.systemd_service:
+        name: falco-modern-bpf.service
+      register: falco_service
+      changed_when: false
+
+    - name: Verify Falco is enabled in the image
+      ansible.builtin.assert:
+        that:
+          - falco_service.status.LoadState == "loaded"
+          - falco_service.status.UnitFileState == "enabled"
+        fail_msg: "Falco modern eBPF service is not installed and enabled"
+
+    - name: Install AWS CLI v2
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp/awscliv2
+          /tmp/awscliv2/aws/install
+          rm -rf /tmp/awscliv2.zip /tmp/awscliv2
+        executable: /bin/bash
+        creates: /usr/local/bin/aws
+
+    - name: Install CloudWatch Agent
+      ansible.builtin.apt:
+        deb: https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
+        state: present
+
+    - name: Remove unwanted packages
+      ansible.builtin.apt:
+        name:
+          - open-iscsi
+          - needrestart
+          - landscape-common
+          - motd-news-config
+          - apport
+          - unattended-upgrades
+          - git
+          - ssh-import-id
+          - ubuntu-drivers-common
+          - usbutils
+          - bpftrace
+        state: absent
+        purge: true
+        autoremove: true
+
+    - name: Check if snap command exists
+      ansible.builtin.stat:
+        path: /usr/bin/snap
+      register: snap_bin
+
+    - name: Remove snap SSM Agent
+      community.general.snap:
+        name: amazon-ssm-agent
+        state: absent
+      when: snap_bin.stat.exists
+
+    - name: Remove snapd
+      ansible.builtin.apt:
+        name: snapd
+        state: absent
+        purge: true
+        autoremove: true
+
+    - name: Download SSM Agent deb
+      ansible.builtin.get_url:
+        url: https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/debian_amd64/amazon-ssm-agent.deb
+        dest: /tmp/amazon-ssm-agent.deb
+        mode: "0644"
+
+    - name: Install SSM Agent deb
+      ansible.builtin.apt:
+        deb: /tmp/amazon-ssm-agent.deb
+        state: present
+
+    - name: Enable SSM Agent
+      ansible.builtin.systemd_service:
+        name: amazon-ssm-agent
+        enabled: true
+
+    - name: Create the system Quadlet directory
+      ansible.builtin.file:
+        path: /etc/containers/systemd
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install the Dragonwilds Quadlet
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/dragonwilds.container"
+        dest: /etc/containers/systemd/dragonwilds.container
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Pre-pull Dragonwilds container image into the AMI
+      ansible.builtin.command:
+        cmd: podman pull ghcr.io/runescape/rsdw-dedicated@sha256:a35b3c127f23c6b1491dfc5d85222c7f5d9c29036df53dcab6a0c6ad32924bd7
+      changed_when: true
+
+    - name: Install the Dragonwilds bootstrap script
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/dragonwilds-bootstrap.sh"
+        dest: /usr/local/sbin/dragonwilds-bootstrap
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Install the Dragonwilds bootstrap service
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../files/dragonwilds-bootstrap.service"
+        dest: /etc/systemd/system/dragonwilds-bootstrap.service
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Create Dragonwilds data directory
+      ansible.builtin.file:
+        path: /srv/dragonwilds
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Reload systemd and enable the Dragonwilds bootstrap service
+      ansible.builtin.systemd_service:
+        name: dragonwilds-bootstrap.service
+        daemon_reload: true
+        enabled: true
+
+    - name: Remove image-build-only packages
+      ansible.builtin.apt:
+        name:
+          - curl
+          - unzip
+          - gnupg
+        state: absent
+        purge: true
+        autoremove: true
+
+    - name: Remove image-build temporary files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/falcosecurity-packages.asc
+        - /tmp/amazon-ssm-agent.deb
+
+    - name: Check if AIDE is installed
+      ansible.builtin.stat:
+        path: /usr/bin/aide
+      register: aide_bin
+
+    - name: Configure AIDE exclusions for Dragonwilds runtime paths
+      ansible.builtin.blockinfile:
+        path: /etc/aide/aide.conf
+        marker: "# {mark} ANSIBLE MANAGED DRAGONWILDS EXCLUSIONS"
+        create: false
+        block: |
+          !/srv/dragonwilds
+          !/var/lib/containers
+          !/run/containers
+          !/var/log/falco_alerts.json
+      when: aide_bin.stat.exists
+
+    - name: Re-initialize AIDE database to baseline the final baked image
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if [ -x /usr/sbin/update-aide.conf ]; then
+          /usr/sbin/update-aide.conf
+        fi
+        aideinit -y -f || /usr/bin/aide --config /etc/aide/aide.conf --init
+        if [ -f /var/lib/aide/aide.db.new ]; then
+          cp -f /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+          chmod 0600 /var/lib/aide/aide.db
+        fi
+      when: aide_bin.stat.exists
+      changed_when: true

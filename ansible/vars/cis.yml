@@ -1,0 +1,43 @@
+---
+# Identify the target as an EC2 host running containers.
+system_is_ec2: true
+system_is_container: false
+
+# Match auditing to our intended Level 1 baseline.
+ubtu24cis_level_1: true
+ubtu24cis_level_2: false
+
+# Coordinate reboots through the image-building workflow.
+skip_reboot: true
+
+# Start without controls designated highly disruptive.
+ubtu24cis_disruption_high: false
+
+# Enforce AppArmor profiles.
+ubtu24cis_apparmor_disable: false
+ubtu24cis_apparmor_mode: enforce
+
+# Preserve IP forwarding used by Podman's bridged networking.
+ubtu24cis_is_router: true
+
+# Manage the host firewall in our own dedicated tasks.
+ubtu24cis_firewall_package: "none"
+
+# Preserve passwordless privilege escalation for the build account.
+ubtu24cis_sudoers_exclude_nopasswd_list:
+  - ubuntu
+
+# Skip the password-age-in-future check — not meaningful on a fresh image
+# and sensitive to clock skew during Packer builds.
+ubtu24cis_rule_5_4_1_6: false
+
+# Run Goss-based CIS checks before and after remediation.
+setup_audit: true
+run_audit: true
+audit_only: false
+audit_format: json
+
+# Fetch the generated reports back to the Ansible/Packer controller.
+fetch_audit_output: true
+audit_output_collection_method: fetch
+audit_output_destination: ./audit-reports/

@@ -1,0 +1,21 @@
+---
+- list: dragonwilds_data_paths
+  items:
+    - /srv/dragonwilds
+    - /home/steam/rsdw-dedicated
+
+- rule: Dragonwilds data directory modified
+  desc: A process modified the persistent Dragonwilds data directory
+  condition: >
+    (fs.path.name pmatch (dragonwilds_data_paths)
+    or fs.path.source pmatch (dragonwilds_data_paths)
+    or fs.path.target pmatch (dragonwilds_data_paths))
+    and (mkdir or rename or remove or open_write or create_symlink
+    or evt.type in (link, linkat))
+  output: >
+    Dragonwilds data changed
+    event=%evt.type path=%fs.path.name source=%fs.path.source
+    target=%fs.path.target user=%user.name process=%proc.name
+    command=%proc.cmdline container=%container.name
+  priority: WARNING
+  tags: [dragonwilds, filesystem]

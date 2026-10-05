@@ -1,0 +1,39 @@
+# Packer build artifacts
+packer/manifest.json
+packer_cache/
+crash.log
+crash.*.log
+*.log
+
+# Ansible-installed dependencies and generated reports
+ansible/roles/ubuntu24_cis/
+ansible/collections/
+audit-reports/
+*.retry
+
+# Local credentials and secret material
+.aws/
+.env
+.env.*
+*.env
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local-only configuration
+.vscode/
+.idea/
+*.local.yml
+*.local.yaml
+*.local.json
+*.swp
+*.swo
+*~
+
+# Language and operating-system noise
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db

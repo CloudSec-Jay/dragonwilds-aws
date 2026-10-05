@@ -1,0 +1,15 @@
+[Unit]
+Description=Prepare persistent storage and runtime secrets for Dragonwilds
+Wants=network-online.target
+After=network-online.target cloud-final.service
+Before=dragonwilds.service
+ConditionPathExists=/etc/dragonwilds/bootstrap.env
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/dragonwilds/bootstrap.env
+ExecStart=/usr/local/sbin/dragonwilds-bootstrap
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

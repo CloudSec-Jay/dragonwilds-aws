@@ -1,0 +1,37 @@
+[Unit]
+Description=Dragonwilds dedicated server
+Wants=network-online.target
+Requires=dragonwilds-bootstrap.service
+After=network-online.target cloud-final.service dragonwilds-bootstrap.service
+RequiresMountsFor=/srv/dragonwilds
+ConditionPathExists=/run/dragonwilds/server.env
+
+[Container]
+Image=ghcr.io/runescape/rsdw-dedicated@sha256:a35b3c127f23c6b1491dfc5d85222c7f5d9c29036df53dcab6a0c6ad32924bd7
+ContainerName=rsdw-dedicated
+
+PublishPort=7777:7777/udp
+PublishPort=8888:8888/udp
+
+HealthCmd=CMD-SHELL grep -qi ':1E61 ' /proc/net/udp || grep -qi ':1E61 ' /proc/net/udp6
+HealthInterval=30s
+HealthRetries=3
+HealthStartPeriod=120s
+HealthTimeout=10s
+
+EnvironmentFile=/run/dragonwilds/server.env
+Environment=RSDW_SERVER_NAME=rsdw-container
+Environment=RSDW_PORT=7777
+Environment=RSDW_BEACON_PORT=8888
+
+Volume=/srv/dragonwilds:/home/steam/rsdw-dedicated
+LogDriver=journald
+
+[Service]
+ExecStartPre=/usr/bin/mountpoint -q /srv/dragonwilds
+Restart=always
+RestartSec=15
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target
