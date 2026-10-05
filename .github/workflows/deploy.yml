@@ -69,10 +69,14 @@ jobs:
         run: |
           ansible-lint ansible/image.yml
 
-      - name: Install and Run Trivy Security Scan
-        run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
-          trivy fs --scanners misconfig,secret --severity HIGH,CRITICAL --exit-code 1 .
+      - name: Run Trivy Security & IaC Scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
 
   detect-changes:
     name: Determine Build Type
