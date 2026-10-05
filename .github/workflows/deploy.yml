@@ -31,10 +31,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -44,7 +44,7 @@ jobs:
           ansible-galaxy install -r ansible/requirements.yml
 
       - name: Set up Packer
-        uses: hashicorp/setup-packer@main
+        uses: hashicorp/setup-packer@v3
 
       - name: Run ShellCheck
         run: |
@@ -88,7 +88,7 @@ jobs:
       build_type: ${{ steps.check.outputs.build_type }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 2
 
@@ -164,17 +164,17 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Configure AWS Credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
 
       - name: Set up Python
         if: ${{ needs.detect-changes.outputs.build_type == 'master' || needs.detect-changes.outputs.build_type == 'fast' }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -186,7 +186,7 @@ jobs:
 
       - name: Set up Packer
         if: ${{ needs.detect-changes.outputs.build_type == 'master' || needs.detect-changes.outputs.build_type == 'fast' }}
-        uses: hashicorp/setup-packer@main
+        uses: hashicorp/setup-packer@v3
 
       # Branch A: Full Master Build (~25m)
       - name: Bake Full Master AMI (CIS Hardened)
