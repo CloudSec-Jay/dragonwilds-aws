@@ -273,5 +273,7 @@
           cp -f /var/lib/aide/aide.db.new /var/lib/aide/aide.db
           chmod 0600 /var/lib/aide/aide.db
         fi
+      args:
+        executable: /bin/bash
       when: aide_bin.stat.exists
       changed_when: true

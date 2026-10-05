@@ -19,6 +19,7 @@ name: CI/CD Pipeline
           - auto
           - fast
           - master
+          - deploy-only
 
 concurrency:
   group: production-deployment
@@ -84,51 +85,78 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     outputs:
-      run_master: ${{ steps.check.outputs.run_master }}
+      build_type: ${{ steps.check.outputs.build_type }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 2
 
-      - name: Check for hardening changes
+      - name: Check file changes
         id: check
         run: |
-          # If manually requested 'master' or scheduled monthly run
+          # 1. Manual or scheduled triggers
           if [ "${{ github.event.inputs.build_type }}" = "master" ] || [ "${{ github.event_name }}" = "schedule" ]; then
             echo "Selected Full Master Build."
-            echo "run_master=true" >> "$GITHUB_OUTPUT"
+            echo "build_type=master" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # If manually requested 'fast'
           if [ "${{ github.event.inputs.build_type }}" = "fast" ]; then
             echo "Selected Fast Update Build."
-            echo "run_master=false" >> "$GITHUB_OUTPUT"
+            echo "build_type=fast" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Safe change detection (handles initial commit where HEAD~1 does not exist)
-          if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
-            PATTERN="^(ansible/harden\.yml|ansible/vars/cis\.yml|ansible/requirements\.yml|packer/dragonwilds\.pkr\.hcl)"
-            CHANGED_HARDENING=$(git diff --name-only HEAD~1 HEAD | grep -E "$PATTERN" || true)
-          else
-            echo "Initial commit or no parent revision found; defaulting to fast build."
-            CHANGED_HARDENING=""
+          if [ "${{ github.event.inputs.build_type }}" = "deploy-only" ]; then
+            echo "Selected Deploy-Only (CloudFormation direct)."
+            echo "build_type=deploy_only" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-          if [ -n "$CHANGED_HARDENING" ]; then
-            echo "Detected hardening changes: $CHANGED_HARDENING"
-            echo "run_master=true" >> "$GITHUB_OUTPUT"
+          # 2. Automated Git diff change detection
+          if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
           else
-            echo "Only application/runtime changes detected. Running fast build."
-            echo "run_master=false" >> "$GITHUB_OUTPUT"
+            echo "Initial commit or no parent revision found; defaulting to fast build."
+            CHANGED_FILES="ansible/image.yml"
           fi
+
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+
+          # Priority A: Hardening changes -> Full Master Build (~25m)
+          MASTER_PATTERN="^(ansible/harden\.yml|ansible/vars/cis\.yml|ansible/requirements\.yml|packer/dragonwilds\.pkr\.hcl)"
+          if echo "$CHANGED_FILES" | grep -qE "$MASTER_PATTERN"; then
+            echo "Detected OS hardening changes -> Triggering Full Master Build."
+            echo "build_type=master" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Priority B: Application/image layer changes -> Fast Update Build (~90s)
+          FAST_PATTERN="^(ansible/|packer/)"
+          if echo "$CHANGED_FILES" | grep -qE "$FAST_PATTERN"; then
+            echo "Detected Ansible/Packer application changes -> Triggering Fast Update Build."
+            echo "build_type=fast" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Priority C: CloudFormation infrastructure changes -> Deploy directly (No AMI bake)
+          CFN_PATTERN="^(cloudformation/)"
+          if echo "$CHANGED_FILES" | grep -qE "$CFN_PATTERN"; then
+            echo "Detected CloudFormation changes only -> Triggering Direct Deploy without AMI baking."
+            echo "build_type=deploy_only" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Priority D: Documentation / metadata changes -> Skip deployment completely
+          echo "Only documentation or repository metadata changed -> Skipping build & deployment."
+          echo "build_type=skip" >> "$GITHUB_OUTPUT"
 
   bake-and-deploy:
     name: Bake AMI & Deploy
     needs: [lint, detect-changes]
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && needs.detect-changes.outputs.build_type != 'skip'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -145,21 +173,24 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
 
       - name: Set up Python
+        if: ${{ needs.detect-changes.outputs.build_type == 'master' || needs.detect-changes.outputs.build_type == 'fast' }}
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install Ansible Dependencies
+        if: ${{ needs.detect-changes.outputs.build_type == 'master' || needs.detect-changes.outputs.build_type == 'fast' }}
         run: |
           pip install ansible
           ansible-galaxy install -r ansible/requirements.yml
 
       - name: Set up Packer
+        if: ${{ needs.detect-changes.outputs.build_type == 'master' || needs.detect-changes.outputs.build_type == 'fast' }}
         uses: hashicorp/setup-packer@main
 
       # Branch A: Full Master Build (~25m)
       - name: Bake Full Master AMI (CIS Hardened)
-        if: ${{ needs.detect-changes.outputs.run_master == 'true' }}
+        if: ${{ needs.detect-changes.outputs.build_type == 'master' }}
         id: master-build
         run: |
           packer init packer/dragonwilds.pkr.hcl
@@ -171,7 +202,7 @@ jobs:
 
       # Branch B: Fast Layered Build (~90s)
       - name: Bake Fast Update AMI (Layered)
-        if: ${{ needs.detect-changes.outputs.run_master == 'false' }}
+        if: ${{ needs.detect-changes.outputs.build_type == 'fast' }}
         id: fast-build
         run: |
           packer init packer/dragonwilds-update.pkr.hcl
@@ -184,7 +215,7 @@ jobs:
 
       - name: Deploy CloudFormation Stack
         run: |
-          TARGET_AMI="${{ steps.master-build.outputs.ami_id || steps.fast-build.outputs.ami_id }}"
+          TARGET_AMI="${{ steps.master-build.outputs.ami_id || steps.fast-build.outputs.ami_id || secrets.BASE_AMI_ID }}"
           echo "Deploying CloudFormation stack with AMI: $TARGET_AMI"
           aws cloudformation deploy \
             --template-file cloudformation/server.yaml \
