@@ -444,6 +444,11 @@ Resources:
                       "log_stream_name": "{instance_id}/syslog"
                     },
                     {
+                      "file_path": "/var/log/falco_alerts.json",
+                      "log_group_name": "${DragonwildsLogGroup}",
+                      "log_stream_name": "{instance_id}/falco-security"
+                    },
+                    {
                       "file_path": "/var/log/cloud-init-output.log",
                       "log_group_name": "${DragonwildsLogGroup}",
                       "log_stream_name": "{instance_id}/cloud-init"

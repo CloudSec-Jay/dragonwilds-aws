@@ -69,6 +69,16 @@ build {
     ]
   }
 
+  provisioner "ansible" {
+    playbook_file   = "${path.root}/../ansible/finalize.yml"
+    user            = "ubuntu"
+    extra_arguments = ["--become"]
+    ansible_env_vars = [
+      "ANSIBLE_HOST_KEY_CHECKING=False",
+      "ANSIBLE_NOCOWS=1",
+    ]
+  }
+
   post-processor "manifest" {
     output     = "${path.root}/manifest.json"
     strip_path = true

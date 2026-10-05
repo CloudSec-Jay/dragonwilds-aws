@@ -10,8 +10,12 @@
     (fs.path.name pmatch (dragonwilds_data_paths)
     or fs.path.source pmatch (dragonwilds_data_paths)
     or fs.path.target pmatch (dragonwilds_data_paths))
-    and (mkdir or rename or remove or open_write or create_symlink
-    or evt.type in (link, linkat))
+    and (evt.type in (mkdir, mkdirat, rename, renameat, renameat2,
+    unlink, unlinkat, rmdir, symlink, symlinkat, link, linkat)
+    or (evt.type in (open, openat, openat2) and evt.is_open_write=true))
+    and evt.failed=false
+    and not (container.name=rsdw-dedicated and user.uid=1000
+    and proc.name=RSDragonwildsSe)
   output: >
     Dragonwilds data changed
     event=%evt.type path=%fs.path.name source=%fs.path.source
@@ -19,3 +23,33 @@
     command=%proc.cmdline container=%container.name
   priority: WARNING
   tags: [dragonwilds, filesystem]
+
+- rule: Sudo execution
+  desc: A process executed sudo
+  condition: evt.type in (execve, execveat) and evt.failed=false and proc.name=sudo
+  output: "Sudo executed user=%user.name command=%proc.cmdline container=%container.name"
+  priority: NOTICE
+  tags: [dragonwilds, authentication]
+
+- rule: Authentication attempt failed
+  desc: A process opened the failed-login database for writing
+  condition: >
+    evt.type in (open, openat, openat2) and evt.is_open_write=true
+    and evt.failed=false and fd.name=/var/log/btmp
+  output: "Failed-login database opened user=%user.name command=%proc.cmdline container=%container.name"
+  priority: NOTICE
+  tags: [dragonwilds, authentication]
+
+- rule: Use of chattr
+  desc: A process executed a file-attribute tool
+  condition: evt.type in (execve, execveat) and evt.failed=false and proc.name in (chattr, lsattr)
+  output: "File-attribute tool executed user=%user.name command=%proc.cmdline container=%container.name"
+  priority: NOTICE
+  tags: [dragonwilds, filesystem]
+
+- rule: Use of Python
+  desc: A process executed a Python interpreter
+  condition: evt.type in (execve, execveat) and evt.failed=false and proc.name startswith python
+  output: "Python executed user=%user.name command=%proc.cmdline container=%container.name"
+  priority: NOTICE
+  tags: [dragonwilds, execution]

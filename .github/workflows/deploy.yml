@@ -31,24 +31,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install Linters & Ansible
         run: |
-          pip install cfn-lint ansible-lint yamllint ansible
+          pip install cfn-lint ansible-lint yamllint ansible boto3 PyYAML jq
           ansible-galaxy install -r ansible/requirements.yml
 
       - name: Set up Packer
-        uses: hashicorp/setup-packer@v3
+        uses: hashicorp/setup-packer@main
 
       - name: Run ShellCheck
         run: |
           shellcheck ansible/files/dragonwilds-bootstrap.sh
+
+      - name: Run deployment regression tests
+        run: python -m unittest discover -s tests -v
 
       - name: Validate Packer templates
         run: |
@@ -60,7 +63,8 @@ jobs:
 
       - name: Run yamllint
         run: |
-          yamllint -d "{extends: default, rules: {line-length: {max: 160}, document-start: disable}}" ansible/ .github/
+          git ls-files -z 'ansible/*.yml' 'ansible/files/*.yaml' 'ansible/vars/*.yml' '.github/*.yml' | \
+            xargs -0 yamllint -d "{extends: default, rules: {line-length: {max: 160}, document-start: disable}}"
 
       - name: Run cfn-lint
         run: |
@@ -68,7 +72,7 @@ jobs:
 
       - name: Run ansible-lint
         run: |
-          ansible-lint ansible/image.yml
+          ansible-lint ansible/image.yml ansible/finalize.yml
 
       - name: Run Trivy Security & IaC Scan
         uses: aquasecurity/trivy-action@v0.36.0
@@ -88,70 +92,16 @@ jobs:
       build_type: ${{ steps.check.outputs.build_type }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Check file changes
         id: check
-        run: |
-          # 1. Manual or scheduled triggers
-          if [ "${{ github.event.inputs.build_type }}" = "master" ] || [ "${{ github.event_name }}" = "schedule" ]; then
-            echo "Selected Full Master Build."
-            echo "build_type=master" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ "${{ github.event.inputs.build_type }}" = "fast" ]; then
-            echo "Selected Fast Update Build."
-            echo "build_type=fast" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ "${{ github.event.inputs.build_type }}" = "deploy-only" ]; then
-            echo "Selected Deploy-Only (CloudFormation direct)."
-            echo "build_type=deploy_only" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # 2. Automated Git diff change detection
-          if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
-            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
-          else
-            echo "Initial commit or no parent revision found; defaulting to fast build."
-            CHANGED_FILES="ansible/image.yml"
-          fi
-
-          echo "Changed files:"
-          echo "$CHANGED_FILES"
-
-          # Priority A: Hardening changes -> Full Master Build (~25m)
-          MASTER_PATTERN="^(ansible/harden\.yml|ansible/vars/cis\.yml|ansible/requirements\.yml|packer/dragonwilds\.pkr\.hcl)"
-          if echo "$CHANGED_FILES" | grep -qE "$MASTER_PATTERN"; then
-            echo "Detected OS hardening changes -> Triggering Full Master Build."
-            echo "build_type=master" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Priority B: Application/image layer changes -> Fast Update Build (~90s)
-          FAST_PATTERN="^(ansible/|packer/)"
-          if echo "$CHANGED_FILES" | grep -qE "$FAST_PATTERN"; then
-            echo "Detected Ansible/Packer application changes -> Triggering Fast Update Build."
-            echo "build_type=fast" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Priority C: CloudFormation infrastructure changes -> Deploy directly (No AMI bake)
-          CFN_PATTERN="^(cloudformation/)"
-          if echo "$CHANGED_FILES" | grep -qE "$CFN_PATTERN"; then
-            echo "Detected CloudFormation changes only -> Triggering Direct Deploy without AMI baking."
-            echo "build_type=deploy_only" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Priority D: Documentation / metadata changes -> Skip deployment completely
-          echo "Only documentation or repository metadata changed -> Skipping build & deployment."
-          echo "build_type=skip" >> "$GITHUB_OUTPUT"
+        env:
+          REQUESTED_BUILD: ${{ inputs.build_type || 'auto' }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: python scripts/detect_changes.py
 
   bake-and-deploy:
     name: Bake AMI & Deploy
@@ -164,19 +114,30 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Configure AWS Credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
 
       - name: Set up Python
-        if: ${{ needs.detect-changes.outputs.build_type == 'master' || needs.detect-changes.outputs.build_type == 'fast' }}
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Install deployment dependencies
+        run: pip install boto3 PyYAML
+
+      - name: Resolve base AMI from the deployed stack
+        if: ${{ needs.detect-changes.outputs.build_type == 'fast' }}
+        id: base
+        env:
+          BASE_AMI_ID: ${{ secrets.BASE_AMI_ID }}
+        run: |
+          BASE_AMI=$(python scripts/deploy.py resolve-ami)
+          echo "ami_id=$BASE_AMI" >> "$GITHUB_OUTPUT"
 
       - name: Install Ansible Dependencies
         if: ${{ needs.detect-changes.outputs.build_type == 'master' || needs.detect-changes.outputs.build_type == 'fast' }}
@@ -186,7 +147,7 @@ jobs:
 
       - name: Set up Packer
         if: ${{ needs.detect-changes.outputs.build_type == 'master' || needs.detect-changes.outputs.build_type == 'fast' }}
-        uses: hashicorp/setup-packer@v3
+        uses: hashicorp/setup-packer@main
 
       # Branch A: Full Master Build (~25m)
       - name: Bake Full Master AMI (CIS Hardened)
@@ -200,28 +161,31 @@ jobs:
           NEW_AMI=$(jq -r '.builds[-1].artifact_id' packer/manifest.json | cut -d':' -f2)
           echo "ami_id=$NEW_AMI" >> "$GITHUB_OUTPUT"
 
-      # Branch B: Fast Layered Build (~90s)
+      # Branch B: Layered build, including the final AIDE baseline
       - name: Bake Fast Update AMI (Layered)
         if: ${{ needs.detect-changes.outputs.build_type == 'fast' }}
         id: fast-build
         run: |
           packer init packer/dragonwilds-update.pkr.hcl
           packer build \
-            -var "base_ami_id=${{ secrets.BASE_AMI_ID }}" \
+            -var "base_ami_id=${{ steps.base.outputs.ami_id }}" \
             -var "aws_region=${{ secrets.AWS_REGION || 'us-east-1' }}" \
             packer/dragonwilds-update.pkr.hcl
           NEW_AMI=$(jq -r '.builds[-1].artifact_id' packer/manifest.json | cut -d':' -f2)
           echo "ami_id=$NEW_AMI" >> "$GITHUB_OUTPUT"
 
       - name: Deploy CloudFormation Stack
-        run: |
-          TARGET_AMI="${{ steps.master-build.outputs.ami_id || steps.fast-build.outputs.ami_id || secrets.BASE_AMI_ID }}"
-          echo "Deploying CloudFormation stack with AMI: $TARGET_AMI"
-          aws cloudformation deploy \
-            --template-file cloudformation/server.yaml \
-            --stack-name dragonwilds \
-            --parameter-overrides \
-              AmiId="$TARGET_AMI" \
-              ServerSecretArn="${{ secrets.SERVER_SECRET_ARN }}" \
-            --capabilities CAPABILITY_IAM \
-            --no-fail-on-empty-changeset
+        env:
+          BAKED_AMI_ID: ${{ steps.master-build.outputs.ami_id || steps.fast-build.outputs.ami_id }}
+          BASE_AMI_ID: ${{ secrets.BASE_AMI_ID }}
+          SERVER_SECRET_ARN: ${{ secrets.SERVER_SECRET_ARN }}
+        run: python scripts/deploy.py deploy
+
+      - name: Preserve recovery state for an interrupted deployment
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-recovery
+          path: deployment-recovery.json
+          if-no-files-found: ignore
+          retention-days: 7

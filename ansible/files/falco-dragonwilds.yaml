@@ -4,8 +4,7 @@
 json_output: true
 priority: notice
 
-rules_files:
-  - /etc/falco/rules.d
+# Use the packaged rules_files order: defaults, then /etc/falco/rules.d.
 
 stdout_output:
   enabled: true
@@ -34,7 +33,7 @@ rules:
   - enable:
       rule: Use of Python
 
-  # Base Falco detection rules
+  # Keep the existing upstream container detections enabled.
   - enable:
       rule: Terminal shell in container
   - enable:

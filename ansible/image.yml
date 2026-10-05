@@ -27,6 +27,7 @@
           - gnupg
           - unzip
           - curl
+          - logrotate
         state: present
         update_cache: true
 
@@ -87,6 +88,19 @@
         owner: root
         group: root
         mode: "0644"
+
+    - name: Install Falco alert rotation
+      ansible.builtin.copy:
+        src: falco-alerts.logrotate
+        dest: /etc/logrotate.d/falco-alerts
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Validate Falco configuration and rules without loading a driver
+      ansible.builtin.command:
+        cmd: falco --dry-run -o engine.kind=nodriver
+      changed_when: false
 
     - name: Enable Falco with the modern eBPF driver
       ansible.builtin.systemd_service:
@@ -244,36 +258,3 @@
       loop:
         - /tmp/falcosecurity-packages.asc
         - /tmp/amazon-ssm-agent.deb
-
-    - name: Check if AIDE is installed
-      ansible.builtin.stat:
-        path: /usr/bin/aide
-      register: aide_bin
-
-    - name: Configure AIDE exclusions for Dragonwilds runtime paths
-      ansible.builtin.blockinfile:
-        path: /etc/aide/aide.conf
-        marker: "# {mark} ANSIBLE MANAGED DRAGONWILDS EXCLUSIONS"
-        create: false
-        block: |
-          !/srv/dragonwilds
-          !/var/lib/containers
-          !/run/containers
-          !/var/log/falco_alerts.json
-      when: aide_bin.stat.exists
-
-    - name: Re-initialize AIDE database to baseline the final baked image
-      ansible.builtin.shell: |
-        set -euo pipefail
-        if [ -x /usr/sbin/update-aide.conf ]; then
-          /usr/sbin/update-aide.conf
-        fi
-        aideinit -y -f || /usr/bin/aide --config /etc/aide/aide.conf --init
-        if [ -f /var/lib/aide/aide.db.new ]; then
-          cp -f /var/lib/aide/aide.db.new /var/lib/aide/aide.db
-          chmod 0600 /var/lib/aide/aide.db
-        fi
-      args:
-        executable: /bin/bash
-      when: aide_bin.stat.exists
-      changed_when: true

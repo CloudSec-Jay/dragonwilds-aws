@@ -21,8 +21,9 @@ A hardened Ubuntu 24.04 AMI is built with Packer and Ansible, then deployed via 
 ```
 Packer
   ├── image.yml               # Installs Podman, pre-pulls container image, configures Falco, purges bloat
-  └── harden.yml              # Applies CIS Level 1 hardening (ansible-lockdown role)
-        └── vars/cis.yml      # Benchmark overrides for containerized EC2 host
+  ├── harden.yml              # Applies CIS Level 1 hardening (ansible-lockdown role)
+  │     └── vars/cis.yml      # Benchmark overrides for containerized EC2 host
+  └── finalize.yml            # Runtime exclusions and final AIDE baseline
 
 CloudFormation
   └── server.yaml             # VPC, EC2, UFW, EBS world volume, IAM roles, CloudWatch Logs
@@ -31,7 +32,7 @@ Runtime Stack
   ├── Telemetry & Monitoring
   │     ├── Falco (modern eBPF kernel tracing -> /var/log/falco_alerts.json)
   │     ├── CloudWatch Agent (streams falco-security & cloud-init to CloudWatch Logs)
-  │     └── AIDE (SHA256 baseline file integrity monitoring)
+  │     └── AIDE (cryptographic baseline file integrity monitoring)
   │
   └── Container Execution
         ├── dragonwilds-bootstrap.service (EBS discovery, mount, secret retrieval)
@@ -50,6 +51,7 @@ Runtime Stack
 ├── ansible/
 │   ├── image.yml                      # Image preparation, container pre-pull, Falco setup, package cleanup
 │   ├── harden.yml                     # CIS Level 1 hardening playbook
+│   ├── finalize.yml                   # Final AIDE baseline, after hardening
 │   ├── requirements.yml               # Pinned ansible-lockdown dependencies
 │   ├── vars/
 │   │   └── cis.yml                    # CIS benchmark overrides
@@ -57,15 +59,20 @@ Runtime Stack
 │       └── ubuntu24_cis/              # Pinned UBUNTU24-CIS role
 ├── cloudformation/
 │   └── server.yaml                    # VPC, EC2, IAM, EBS, UFW routing, CloudWatch Agent
-├── files/
+├── ansible/files/
 │   ├── dragonwilds.container          # Podman Quadlet unit file (zero-dependency health check)
 │   ├── dragonwilds-bootstrap.service  # Reboot-safe volume mount & secret injection
 │   ├── dragonwilds-bootstrap.sh       # NVMe EBS dynamic attachment & secret retrieval
 │   ├── falco-dragonwilds.yaml         # Falco JSON file output & rule whitelist
-│   └── falco-dragonwilds-rules.yaml   # Custom Falco security rules (tampering, sudo, auth, etc.)
+│   ├── falco-dragonwilds-rules.yaml    # Custom Falco security rules
+│   └── falco-alerts.logrotate          # Daily alert rotation
+├── scripts/
+│   ├── detect_changes.py              # Select build mode across the entire push
+│   └── deploy.py                      # AMI selection, staged disk handoff, recovery
+├── tests/                             # Deployment and secret-format regression tests
 └── packer/
     ├── dragonwilds.pkr.hcl            # Full production AMI build (CIS + runtime, ~25m)
-    ├── dragonwilds-update.pkr.hcl     # Fast incremental build on base AMI (~90s)
+    ├── dragonwilds-update.pkr.hcl     # Fast incremental build on base AMI (includes final AIDE baseline)
     └── cis-audit.pkr.hcl              # Non-mutating CIS audit scanner
 ```
 
@@ -74,17 +81,18 @@ Runtime Stack
 ## Security Architecture
 
 ### 1. Runtime Kernel Detection (Falco eBPF)
-Falco runs via the `modern_ebpf` driver (`falco-modern-bpf.service`) without requiring kernel headers or compiler toolchains. All default noisy rules are disabled, evaluating only **5 targeted security rules**:
+Falco runs via the `modern_ebpf` driver (`falco-modern-bpf.service`) without requiring kernel headers or compiler toolchains. The configuration enables **5 custom security rules**, plus four upstream detections: terminal shells in containers, log clearing, network redirection of standard streams, and dropped executables in containers. The custom rules are:
 
 | Rule | Target Trigger | Mitigation / Tuning |
 | :--- | :--- | :--- |
-| **Dragonwilds data directory modified** | Detects writes, unlinks, or renames in `/srv/dragonwilds` or `/home/steam/rsdw-dedicated` | Excludes legitimate `RSDragonwildsSe` game saves to eliminate alert noise while alerting on any external tampering. |
+| **Dragonwilds data directory modified** | Detects writes, unlinks, or renames in `/srv/dragonwilds` or `/home/steam/rsdw-dedicated` | Excludes `RSDragonwildsSe` writes only for UID 1000 in the `rsdw-dedicated` container to eliminate alert noise while alerting on any external tampering. |
 | **Sudo execution** | Execution of `sudo` anywhere on the host or inside containers | Alerts whenever privilege escalation occurs. |
-| **Authentication attempt failed** | Writes to `/var/log/btmp` | Detects failed SSH, console, or PAM login attempts. |
+| **Authentication attempt failed** | Successful write-opens of `/var/log/btmp` | Detects failed SSH, console, or PAM login attempts. |
 | **Use of chattr** | Execution of `chattr` or `lsattr` | Detects attempts to set immutable flags (`+i`) for defense evasion. |
-| **Use of Python** | Execution of `python`, `python3`, `python3.12` | Detects interactive scripts or living-off-the-land execution. |
+| **Use of Python** | Execution of a process whose name starts with `python` | Detects interactive scripts or living-off-the-land execution. |
 
 - **Alert Destination**: Structured JSON written directly to `/var/log/falco_alerts.json`.
+- **Build validation**: Falco runs with `--dry-run -o engine.kind=nodriver` during baking; configuration or rule errors fail the build.
 - **Log Rotation**: Governed by `/etc/logrotate.d/falco-alerts` (daily rotation, 7-day local retention, compressed).
 
 ### 2. Log Telemetry (AWS CloudWatch Logs)
@@ -94,8 +102,8 @@ The CloudWatch Agent collects logs and flushes batches every 60 seconds into Log
 - **Host Metrics**: Namespace `CWAgent` tracks CPU, memory, and disk utilization on `/` and `/srv/dragonwilds`.
 
 ### 3. File Integrity Monitoring (AIDE)
-- A baseline cryptographic database (`/var/lib/aide/aide.db`, ~26 MB) is generated during the initial CIS build.
-- Periodic scans verify filesystem binaries, libraries, and configuration files against the SHA256 baseline.
+- A baseline cryptographic database (`/var/lib/aide/aide.db`) is regenerated by `finalize.yml` after all image provisioning, including CIS hardening. Both full and incremental builds run this final step; a base image without AIDE fails explicitly.
+- Periodic scans verify filesystem binaries, libraries, and configuration files against the cryptographic baseline.
 
 ### 4. Network & Host Hardening
 - **Zero Inbound SSH**: TCP port 22 is disabled. Management access is strictly via **AWS Systems Manager (SSM) Session Manager**.
@@ -118,7 +126,7 @@ The CloudWatch Agent collects logs and flushes batches every 60 seconds into Log
 ### Dynamic Storage & Bootstrap (`dragonwilds-bootstrap.sh`)
 - World data is stored on a separate retained gp3 EBS volume mounted at `/srv/dragonwilds`.
 - Discovers the EBS volume dynamically by serial number across `/dev/disk/by-id/` and `lsblk` NVMe identifiers.
-- Dynamically discovers the filesystem UUID and injects an idempotent `/etc/fstab` entry, preventing UUID collision failures when restoring AWS Backup snapshots.
+- Dynamically discovers the filesystem UUID and adds an `/etc/fstab` entry on first bootstrap. If replacing the filesystem on an existing instance with a different UUID, update that entry before rebooting.
 - Fetches container secrets (`RSDW_OWNER_ID`, `RSDW_WORLD_NAME`, `RSDW_PASSWORD`, `RSDW_ADMIN_PASSWORD`) from AWS Secrets Manager and writes them to ephemeral memory at `/run/dragonwilds/server.env`.
 
 ---
@@ -130,17 +138,20 @@ The CloudWatch Agent collects logs and flushes batches every 60 seconds into Log
 # 1. Install pinned Ansible roles
 ansible-galaxy install -r ansible/requirements.yml
 
-# 2. Export active AWS credentials (AWS SSO example)
-eval "$(aws configure export-credentials --profile jayadmin --format env)"
+# 2. Authenticate locally with the AWS CLI before building or deploying.
+# Keep AWS configuration and credentials outside this repository.
 ```
 
-### Option A: Fast AMI Layering (~90 seconds)
-If you already have a hardened base AMI, bake runtime, container pre-pull, and Falco updates quickly:
+Local commands use the AWS SDK credential chain. Choose your AWS profile in your local shell or CLI configuration; CI uses GitHub OIDC and the server uses its EC2 IAM role. Do not commit profile files or exported credentials.
+
+### Option A: Incremental AMI Layering
+If you already have a hardened base AMI, bake runtime, container pre-pull, and Falco updates without reapplying the CIS role:
 ```bash
-packer build \
-  -var "base_ami_id=ami-0d65645d21f30bae1" \
-  -var "aws_profile=jayadmin" \
-  packer/dragonwilds-update.pkr.hcl
+pip install boto3 PyYAML
+export AWS_DEFAULT_REGION=us-east-1
+BASE_AMI=$(python scripts/deploy.py resolve-ami)
+packer init packer/dragonwilds-update.pkr.hcl
+packer build -var "base_ami_id=$BASE_AMI" packer/dragonwilds-update.pkr.hcl
 ```
 
 ### Option B: Full AMI Build (~25 minutes)
@@ -150,16 +161,39 @@ packer build packer/dragonwilds.pkr.hcl
 ```
 
 ### Deploying the CloudFormation Stack
+
+Use the deployment script for updates so the world disk is detached before an instance replacement:
+
 ```bash
-aws cloudformation deploy \
-  --template-file cloudformation/server.yaml \
-  --stack-name dragonwilds \
-  --parameter-overrides \
-    AmiId=<NEW_AMI_ID> \
-    ServerSecretArn=<SECRETS_MANAGER_ARN> \
-  --capabilities CAPABILITY_IAM \
-  --profile jayadmin
+pip install boto3 PyYAML
+export AWS_DEFAULT_REGION=us-east-1
+# Initial deployment only: set SERVER_SECRET_ARN to the existing Secrets Manager ARN.
+# Secret values stay in AWS Secrets Manager; do not put them in this repository.
+python scripts/deploy.py deploy --ami <NEW_AMI_ID>
 ```
+
+For infrastructure-only updates, omit `--ami`; the existing stack's AMI and secret ARN are preserved. `BASE_AMI_ID` is only a fallback before the first stack exists. CI fast builds also resolve their base from the deployed stack, so successful master builds become the base automatically. All four required secret fields must be JSON strings; empty passwords are supported, but line breaks and NUL bytes cannot be represented in Podman's environment-file format.
+
+A replacement has planned downtime. The script previews a CloudFormation change set, rejects world-volume replacement, shuts down the old EC2 instance normally, and removes only the attachment from the currently deployed template. It then applies the new template, which attaches the retained disk to the replacement. Do not run a direct CloudFormation AMI update against an attached world disk.
+
+If an update fails and CloudFormation finishes rolling back, the script restores the old template and parameters, reattaches the disk, and restarts the previous server if it was running. A failed rollback or interrupted runner requires recovery after CloudFormation returns to a stable state. CI preserves `deployment-recovery.json` as a seven-day artifact when available; it contains stack configuration and the secret ARN, not secret values. With the matching AWS account and region selected:
+
+```bash
+python scripts/deploy.py recover --recovery-file deployment-recovery.json
+```
+
+The deployment role needs CloudFormation change-set/read/update permissions, `ec2:DescribeInstances`, `ec2:StopInstances`, and `ec2:StartInstances`, in addition to its existing infrastructure and Packer permissions. The stop operation never uses force. Only deploy from one controller at a time; GitHub Actions serializes deployments.
+
+Automatic push detection compares the push's `before` and final SHA. Manual `auto`, scheduled builds, and an unavailable diff base select a full master build.
+
+### Local checks
+
+```bash
+pip install boto3 PyYAML jq
+python -m unittest discover -s tests -v
+```
+
+The tests simulate AWS operations and verify stop/detach/deploy ordering, recovery, AMI selection, multi-commit pushes, and exact secret formatting. They do not deploy resources. A real AMI bake and replacement are still needed to verify the complete EC2 boot path.
 
 ---
 
@@ -180,9 +214,8 @@ From AWS CLI / Workstation:
 # Query recent Falco alerts from CloudWatch Logs
 aws logs get-log-events \
   --log-group-name /dragonwilds/production/system \
-  --log-stream-name "$(aws ec2 describe-instances --filters "Name=tag:Name,Values=dragonwilds-production-server" "Name=instance-state-name,Values=running" --query "Reservations[0].Instances[0].InstanceId" --output text --profile jayadmin)/falco-security" \
-  --limit 5 \
-  --profile jayadmin
+  --log-stream-name "$(aws ec2 describe-instances --filters "Name=tag:Name,Values=dragonwilds-production-server" "Name=instance-state-name,Values=running" --query "Reservations[0].Instances[0].InstanceId" --output text)/falco-security" \
+  --limit 5
 ```
 
 ### Run File Integrity Check (AIDE)

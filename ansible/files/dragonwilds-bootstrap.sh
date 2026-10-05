@@ -69,13 +69,18 @@ fi
 
 install -d -o root -g root -m 0700 /run/dragonwilds
 environment_file="$(mktemp /run/dragonwilds/server.env.XXXXXX)"
+trap 'rm -f "$environment_file"' EXIT
 
 printf '%s' "$secret_json" | jq -er '
   ["RSDW_OWNER_ID", "RSDW_WORLD_NAME", "RSDW_PASSWORD", "RSDW_ADMIN_PASSWORD"] as $required
+  | if type != "object" then error("secret must be a JSON object") else . end
   | $required[] as $key
-  | if has($key)
-    then "\($key)=\(.[$key] | tostring | @json)"
-    else error("missing required secret key: " + $key)
+  | .[$key] as $value
+  | if ($value | type) != "string" then
+      error("secret key must be a string: " + $key)
+    elif ($value | explode | any(. == 0 or . == 10 or . == 13)) then
+      error("secret key contains an unsupported line break or NUL: " + $key)
+    else "\($key)=\($value)"
     end
 ' > "$environment_file"
 

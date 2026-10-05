@@ -6,6 +6,7 @@ crash.*.log
 *.log
 
 # Ansible-installed dependencies and generated reports
+.ansible/
 ansible/roles/ubuntu24_cis/
 ansible/collections/
 audit-reports/
@@ -13,6 +14,10 @@ audit-reports/
 
 # Local credentials and secret material
 .aws/
+aws-config
+aws-credentials
+*.pkrvars.hcl
+*.pkrvars.json
 .env
 .env.*
 *.env
@@ -33,7 +38,18 @@ audit-reports/
 *~
 
 # Language and operating-system noise
+.venv/
+venv/
+.cache/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 __pycache__/
 *.py[cod]
 .DS_Store
 Thumbs.db
+
+# Recovery state may contain environment-specific stack parameters
+deployment-recovery.json
