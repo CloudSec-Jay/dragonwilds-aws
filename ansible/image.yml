@@ -74,7 +74,7 @@
 
     - name: Configure Falco alert output
       ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../files/falco-dragonwilds.yaml"
+        src: falco-dragonwilds.yaml
         dest: /etc/falco/config.d/dragonwilds.yaml
         owner: root
         group: root
@@ -82,7 +82,7 @@
 
     - name: Install the Dragonwilds Falco data-directory rule
       ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../files/falco-dragonwilds-rules.yaml"
+        src: falco-dragonwilds-rules.yaml
         dest: /etc/falco/rules.d/dragonwilds-data.yaml
         owner: root
         group: root
@@ -186,7 +186,7 @@
 
     - name: Install the Dragonwilds Quadlet
       ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../files/dragonwilds.container"
+        src: dragonwilds.container
         dest: /etc/containers/systemd/dragonwilds.container
         owner: root
         group: root
@@ -199,7 +199,7 @@
 
     - name: Install the Dragonwilds bootstrap script
       ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../files/dragonwilds-bootstrap.sh"
+        src: dragonwilds-bootstrap.sh
         dest: /usr/local/sbin/dragonwilds-bootstrap
         owner: root
         group: root
@@ -207,7 +207,7 @@
 
     - name: Install the Dragonwilds bootstrap service
       ansible.builtin.copy:
-        src: "{{ playbook_dir }}/../files/dragonwilds-bootstrap.service"
+        src: dragonwilds-bootstrap.service
         dest: /etc/systemd/system/dragonwilds-bootstrap.service
         owner: root
         group: root

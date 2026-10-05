@@ -1,0 +1,4 @@
+---
+# ansible-lint configuration
+skip_list:
+  - no-relative-paths
