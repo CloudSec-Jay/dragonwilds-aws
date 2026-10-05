@@ -1,5 +1,15 @@
 # dragonwilds-aws
 
+[![CI/CD Pipeline](https://github.com/CloudSec-Jay/dragonwilds-aws/actions/workflows/deploy.yml/badge.svg)](https://github.com/CloudSec-Jay/dragonwilds-aws/actions/workflows/deploy.yml)
+[![Ubuntu 24.04](https://img.shields.io/badge/Ubuntu-24.04_LTS-E95420?style=flat&logo=ubuntu&logoColor=white)](https://ubuntu.com)
+[![CIS Hardened](https://img.shields.io/badge/CIS%20Hardened-Level%201-0052CC?style=flat&logo=security&logoColor=white)](https://www.cisecurity.org/)
+[![Falco eBPF](https://img.shields.io/badge/Runtime%20Security-Falco%20eBPF-00AEC7?style=flat&logo=falco&logoColor=white)](https://falco.org/)
+[![Trivy Scanned](https://img.shields.io/badge/Security-Trivy%20Scanned-1E88E5?style=flat&logo=aqua&logoColor=white)](https://trivy.dev/)
+[![AWS CloudFormation](https://img.shields.io/badge/AWS-CloudFormation-FF9900?style=flat&logo=amazon-aws&logoColor=white)](https://aws.amazon.com/cloudformation/)
+[![Packer](https://img.shields.io/badge/Packer-Automated%20AMI-02A8EF?style=flat&logo=packer&logoColor=white)](https://www.packer.io/)
+[![Ansible](https://img.shields.io/badge/Ansible-CIS%20Automation-EE0000?style=flat&logo=ansible&logoColor=white)](https://www.ansible.com/)
+[![Podman](https://img.shields.io/badge/Container-Podman%20Quadlet-892CA0?style=flat&logo=podman&logoColor=white)](https://podman.io/)
+
 Infrastructure-as-code and runtime security for hosting a hardened [RuneScape: Dragonwilds](https://store.steampowered.com/app/1374490/RuneScape_Dragonwilds/) dedicated server on AWS EC2.
 
 ---
@@ -43,16 +53,16 @@ Runtime Stack
 │   ├── requirements.yml               # Pinned ansible-lockdown dependencies
 │   ├── vars/
 │   │   └── cis.yml                    # CIS benchmark overrides
-│   ├── roles/
-│   │   └── ubuntu24_cis/              # Pinned UBUNTU24-CIS role
-│   └── files/
-│       ├── dragonwilds.container          # Podman Quadlet unit file (zero-dependency health check)
-│       ├── dragonwilds-bootstrap.service  # Reboot-safe volume mount & secret injection
-│       ├── dragonwilds-bootstrap.sh       # NVMe EBS dynamic attachment & secret retrieval
-│       ├── falco-dragonwilds.yaml         # Falco JSON file output & rule whitelist
-│       └── falco-dragonwilds-rules.yaml   # Custom Falco security rules (tampering, sudo, auth, etc.)
+│   └── roles/
+│       └── ubuntu24_cis/              # Pinned UBUNTU24-CIS role
 ├── cloudformation/
 │   └── server.yaml                    # VPC, EC2, IAM, EBS, UFW routing, CloudWatch Agent
+├── files/
+│   ├── dragonwilds.container          # Podman Quadlet unit file (zero-dependency health check)
+│   ├── dragonwilds-bootstrap.service  # Reboot-safe volume mount & secret injection
+│   ├── dragonwilds-bootstrap.sh       # NVMe EBS dynamic attachment & secret retrieval
+│   ├── falco-dragonwilds.yaml         # Falco JSON file output & rule whitelist
+│   └── falco-dragonwilds-rules.yaml   # Custom Falco security rules (tampering, sudo, auth, etc.)
 └── packer/
     ├── dragonwilds.pkr.hcl            # Full production AMI build (CIS + runtime, ~25m)
     ├── dragonwilds-update.pkr.hcl     # Fast incremental build on base AMI (~90s)
