@@ -1,0 +1,11 @@
+---
+- name: Configure AIDE exclusions for Dragonwilds runtime paths
+  ansible.builtin.blockinfile:
+    path: /etc/aide/aide.conf
+    marker: "# {mark} ANSIBLE MANAGED DRAGONWILDS EXCLUSIONS"
+    create: false
+    block: |
+      !/srv/dragonwilds
+      !/var/lib/containers
+      !/run/containers
+      !/var/log/falco_alerts.json

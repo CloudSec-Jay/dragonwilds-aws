@@ -7,6 +7,22 @@
   vars_files:
     - vars/cis.yml
 
+  pre_tasks:
+    - name: Prepare AIDE before the CIS role initializes its first database
+      when: not (audit_only | default(false) | bool)
+      block:
+        - name: Install AIDE without optional mail-server packages
+          ansible.builtin.apt:
+            name:
+              - aide
+              - aide-common
+            state: present
+            update_cache: true
+            install_recommends: false
+
+        - name: Exclude container storage before the first integrity scan
+          ansible.builtin.import_tasks: tasks/aide-exclusions.yml
+
   tasks:
     - name: Apply the Ubuntu CIS hardening role
       ansible.builtin.import_role:

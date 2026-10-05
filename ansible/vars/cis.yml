@@ -31,6 +31,11 @@ ubtu24cis_sudoers_exclude_nopasswd_list:
 # and sensitive to clock skew during Packer builds.
 ubtu24cis_rule_5_4_1_6: false
 
+# Allow the initial integrity scan to finish on the temporary build instance.
+# Runtime/container paths are excluded before the role starts its first scan.
+ubtu24cis_aide_init_async: 1800
+ubtu24cis_aide_init_poll: 15
+
 # Run Goss-based CIS checks before and after remediation.
 setup_audit: true
 run_audit: true

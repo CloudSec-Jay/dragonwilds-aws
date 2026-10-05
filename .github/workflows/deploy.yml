@@ -73,6 +73,7 @@ jobs:
       - name: Run ansible-lint
         run: |
           ansible-lint ansible/image.yml ansible/finalize.yml
+          ansible-playbook --syntax-check ansible/harden.yml
 
       - name: Run Trivy Security & IaC Scan
         uses: aquasecurity/trivy-action@v0.36.0

@@ -15,16 +15,8 @@
         that: aide_bin.stat.exists
         fail_msg: "AIDE is missing; run a full master build before layering updates"
 
-    - name: Configure AIDE exclusions for Dragonwilds runtime paths
-      ansible.builtin.blockinfile:
-        path: /etc/aide/aide.conf
-        marker: "# {mark} ANSIBLE MANAGED DRAGONWILDS EXCLUSIONS"
-        create: false
-        block: |
-          !/srv/dragonwilds
-          !/var/lib/containers
-          !/run/containers
-          !/var/log/falco_alerts.json
+    - name: Apply the same AIDE exclusions to full and incremental builds
+      ansible.builtin.import_tasks: tasks/aide-exclusions.yml
 
     - name: Re-initialize AIDE database to baseline the final baked image
       ansible.builtin.shell: |
@@ -37,4 +29,6 @@
         chmod 0600 /var/lib/aide/aide.db
       args:
         executable: /bin/bash
+      async: 1800
+      poll: 15
       changed_when: true
