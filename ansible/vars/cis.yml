@@ -46,7 +46,3 @@ audit_format: json
 fetch_audit_output: true
 audit_output_collection_method: fetch
 audit_output_destination: ./audit-reports/
-
-# Fallback structure for auditd immutability handler to prevent dict rc lookup errors
-discovered_auditd_immutable_check:
-  rc: 0

@@ -8,14 +8,19 @@
     - vars/cis.yml
 
   pre_tasks:
-    - name: Prepare AIDE before the CIS role initializes its first database
+    # The pinned CIS role gathers package facts before installing auditd, then
+    # uses those stale facts to decide whether to register a handler result.
+    # Install it here so the handler always receives a result containing `rc`.
+    - name: Prepare AIDE and auditd before the CIS role gathers package facts
       when: not (audit_only | default(false) | bool)
       block:
-        - name: Install AIDE without optional mail-server packages
+        - name: Install AIDE and auditd without optional mail-server packages
           ansible.builtin.apt:
             name:
               - aide
               - aide-common
+              - auditd
+              - audispd-plugins
             state: present
             update_cache: true
             install_recommends: false
