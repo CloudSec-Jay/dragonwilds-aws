@@ -255,6 +255,39 @@ python scripts/deploy.py deploy \
 
 The instance role receives read access only to that object. Import happens before the game starts. To deliberately import a different world later, deploy with a different object key; the current save is archived on the retained EBS volume before replacement. Keep the S3 source as an independent backup.
 
+#### Recover a world from Steam Cloud
+
+1. Sign in to [Steam Remote Storage](https://store.steampowered.com/account/remotestorage), find RuneScape: Dragonwilds, and open its files.
+2. Download the desired `.sav`, not the smaller `.sav.backup`. Steam may flatten the Windows path into a filename such as `%WinAppDataLocal%RSDragonwilds_Saved_SaveGames_homeworld.sav`.
+3. Upload the file to a private S3 bucket. SSE-S3 is sufficient; it does not require a customer-managed KMS key.
+4. Record the bucket name and object key separately. For `s3://example-bucket/saves/homeworld.sav`, the bucket is `example-bucket` and the key is `saves/homeworld.sav`. In an HTTPS URL, `%25` represents a literal `%` in the object key.
+5. Store these identifiers as GitHub Actions secrets and start a deploy-only run. They are not credentials, but secrets keep private bucket and save names out of public workflow configuration:
+
+   ```bash
+   printf '%s' '<BUCKET_NAME>' | gh secret set WORLD_SAVE_BUCKET
+   printf '%s' '<OBJECT_KEY>' | gh secret set WORLD_SAVE_KEY
+   gh workflow run deploy.yml --ref main -f build_type=deploy-only
+   ```
+
+6. After deployment, connect with SSM and verify the one-time import marker:
+
+   ```bash
+   sudo cat /srv/dragonwilds/RSDragonwilds/Saved/.s3-world-source
+   ```
+
+An in-place EC2 update changes the CloudFormation parameters and IAM permission but does not necessarily rerun cloud-init. If the marker is absent, keep the game stopped, populate `WORLD_SAVE_BUCKET` and `WORLD_SAVE_KEY` in `/etc/dragonwilds/bootstrap.env`, and restart `dragonwilds-bootstrap.service`. Do not run the importer while the game is writing its save.
+
+Steam's flattened filename is retained when S3 is imported. Before starting the game, rename it to match `RSDW_WORLD_NAME` exactly, including capitalization, and preserve the `.sav` suffix. The importer sets UID/GID `1000:1000`, archives existing saves under `RSDragonwilds/Saved/S3ImportBackups/`, and records the S3 source so later reboots do not overwrite the live world.
+
+#### Recovery challenges and checks
+
+- Every Secrets Manager `RSDW_*` value must be a JSON string. Ports use `"7777"` and `"8888"`, and the Boolean-like value is `"true"`; missing keys evaluate as `null` and stop bootstrap.
+- `WORLD_SAVE_KEY` means the S3 object path, not an encryption key. SSE-S3 needs no KMS key.
+- A successful CloudFormation update proves the infrastructure update completed, not that cloud-init reran or the save was imported. Verify the marker, bootstrap service, container, and files explicitly.
+- Do not execute a manual change set when `DragonwildsInstance` or `DragonwildsDataVolumeAttachment` shows conditional replacement. Use `scripts/deploy.py` or the deploy-only workflow so the instance is stopped and the retained EBS volume is detached safely.
+- `dragonwilds-bootstrap.service` must finish as `active (exited)` before `dragonwilds.service` can start. Use `journalctl -u dragonwilds-bootstrap.service` to identify malformed or missing secret fields.
+- The selected filename must match `RSDW_WORLD_NAME` on Linux, where capitalization matters. Check `/run/dragonwilds/server.env` and `RSDragonwilds/Saved/SaveGames/` before starting the container.
+
 A replacement has planned downtime. The script previews a CloudFormation change set, rejects world-volume replacement, shuts down the old EC2 instance normally, and removes only the attachment from the currently deployed template. It then applies the new template, which attaches the retained disk to the replacement. Do not run a direct CloudFormation AMI update against an attached world disk.
 
 If an update fails and CloudFormation finishes rolling back, the script restores the old template and parameters, reattaches the disk, and restarts the previous server if it was running. A failed rollback or interrupted runner requires recovery after CloudFormation returns to a stable state. CI preserves `deployment-recovery.json` as a seven-day artifact when available; it contains stack configuration and the secret ARN, not secret values. With the matching AWS account and region selected:
