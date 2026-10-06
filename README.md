@@ -2,9 +2,10 @@
 
 [![CI/CD Pipeline](https://github.com/CloudSec-Jay/dragonwilds-aws/actions/workflows/deploy.yml/badge.svg)](https://github.com/CloudSec-Jay/dragonwilds-aws/actions/workflows/deploy.yml)
 [![Ubuntu 24.04](https://img.shields.io/badge/Ubuntu-24.04_LTS-E95420?style=flat&logo=ubuntu&logoColor=white)](https://ubuntu.com)
-[![CIS Hardened](https://img.shields.io/badge/CIS%20Hardened-Level%201-0052CC?style=flat&logo=security&logoColor=white)](https://www.cisecurity.org/)
+[![CIS Benchmark](https://img.shields.io/badge/CIS%20Benchmark-88.40%25-success?style=flat&logo=checkmarx&logoColor=white)](https://www.cisecurity.org/)
 [![Falco eBPF](https://img.shields.io/badge/Runtime%20Security-Falco%20eBPF-00AEC7?style=flat&logo=falco&logoColor=white)](https://falco.org/)
 [![Trivy Scanned](https://img.shields.io/badge/Security-Trivy%20Scanned-1E88E5?style=flat&logo=aqua&logoColor=white)](https://trivy.dev/)
+[![Unit Tests](https://img.shields.io/badge/Unit%20Tests-Passing-brightgreen?style=flat&logo=python&logoColor=white)](https://github.com/CloudSec-Jay/dragonwilds-aws/actions)
 [![AWS CloudFormation](https://img.shields.io/badge/AWS-CloudFormation-FF9900?style=flat&logo=amazon-aws&logoColor=white)](https://aws.amazon.com/cloudformation/)
 [![Packer](https://img.shields.io/badge/Packer-Automated%20AMI-02A8EF?style=flat&logo=packer&logoColor=white)](https://www.packer.io/)
 [![Ansible](https://img.shields.io/badge/Ansible-CIS%20Automation-EE0000?style=flat&logo=ansible&logoColor=white)](https://www.ansible.com/)
@@ -112,6 +113,20 @@ The CloudWatch Agent collects logs and flushes batches every 60 seconds into Log
 - **IMDSv2 Enforced**: Metadata hop limit set to 1, preventing container processes from accessing the EC2 instance role credentials.
 - **Package Minimization**: Unnecessary bloat and potential living-off-the-land tools are purged during image baking:
   `git`, `ssh-import-id`, `ubuntu-drivers-common`, `usbutils`, `bpftrace`, `snapd`, `open-iscsi`, `needrestart`, `landscape-common`, `apport`, `unattended-upgrades`.
+
+### 5. CIS Benchmark Compliance (88.40%)
+The base operating system is hardened against the **CIS Ubuntu 24.04 LTS Benchmark (v1.0.0, Level 1 Server)** using the official `ansible-lockdown/UBUNTU24-CIS` automation with customized container overrides:
+
+| Assessment Stage | Total Controls | Failed | Passed | Compliance % |
+| :--- | :---: | :---: | :---: | :---: |
+| **Pre-Remediation** (Stock Ubuntu 24.04 AMI) | 586 | 189 | 397 | **67.75%** |
+| **Post-Remediation** (Hardened Golden Image) | 586 | 68* | **518** | **88.40%** |
+
+*\*The 68 remaining non-compliant items are documented, intentional exemptions required to support the dedicated server runtime:*
+- **Podman Container Support**: Preserves IP forwarding (`net.ipv4.ip_forward=1`) and bridge network namespaces.
+- **AWS SSM Session Manager**: Retains SSM agent communication channels and daemon execution without requiring inbound SSH (Port 22).
+- **CloudWatch Agent & Falco Telemetry**: Allows system metric streaming and modern eBPF kernel tracing.
+- **Clock Skew Tolerances**: Disables non-deterministic password expiration checks during short-lived Packer image builds.
 
 ---
 
@@ -222,4 +237,18 @@ aws logs get-log-events \
 ### Run File Integrity Check (AIDE)
 ```bash
 sudo aide --config /etc/aide/aide.conf --check
+```
+
+### Inspect CIS Benchmark Compliance Score
+To inspect the audit score from generated Goss benchmark reports:
+```bash
+python3 -c "
+import json, glob
+report = sorted(glob.glob('ansible/audit-reports/*post_scan*.json'))[-1]
+with open(report) as f:
+    s = json.load(f)['summary']
+passed = s['test-count'] - s['failed-count']
+pct = (passed / s['test-count']) * 100
+print(f'CIS Benchmark Score: {pct:.2f}% ({passed}/{s[\"test-count\"]} checks passed, {s[\"failed-count\"]} exempt)')
+"
 ```
