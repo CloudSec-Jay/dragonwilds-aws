@@ -163,7 +163,7 @@ def recover(cfn, ec2, name, original, values, was_running):
 
 
 def deploy(cfn, ec2, name, template, ami="", initial="", secret="",
-           recovery_file="deployment-recovery.json"):
+           recovery_file="deployment-recovery.json", overrides=None):
     stack = get_stack(cfn, name)
     if stack and stack["StackStatus"] not in READY:
         raise ValueError(f"Stack is not ready for an update: {stack['StackStatus']}")
@@ -171,6 +171,7 @@ def deploy(cfn, ec2, name, template, ami="", initial="", secret="",
     values["AmiId"] = select_ami(stack, ami, initial)
     if secret:
         values["ServerSecretArn"] = secret
+    values.update(overrides or {})
     if not values.get("ServerSecretArn", "").startswith("arn:"):
         raise ValueError("SERVER_SECRET_ARN must be a Secrets Manager ARN")
     change_id, changes = plan(cfn, name, template, values, creating=stack is None)
@@ -228,6 +229,8 @@ def main():
     parser.add_argument("--ami", default=os.getenv("BAKED_AMI_ID", ""))
     parser.add_argument("--initial-ami", default=os.getenv("BASE_AMI_ID", ""))
     parser.add_argument("--recovery-file", default="deployment-recovery.json")
+    parser.add_argument("--world-save-bucket", default=os.getenv("WORLD_SAVE_BUCKET", ""))
+    parser.add_argument("--world-save-key", default=os.getenv("WORLD_SAVE_KEY", ""))
     args = parser.parse_args()
     cfn, ec2 = boto3.client("cloudformation"), boto3.client("ec2")
     if args.command == "resolve-ami":
@@ -241,8 +244,17 @@ def main():
         recover(cfn, ec2, args.stack_name, snapshot["template"],
                 snapshot["parameters"], snapshot["was_running"])
     else:
+        world_overrides = {}
+        if args.world_save_bucket or args.world_save_key:
+            if not args.world_save_bucket or not args.world_save_key:
+                raise ValueError("WORLD_SAVE_BUCKET and WORLD_SAVE_KEY must both be set")
+            world_overrides = {
+                "WorldSaveBucket": args.world_save_bucket,
+                "WorldSaveKey": args.world_save_key,
+            }
         deploy(cfn, ec2, args.stack_name, read_template(Path(args.template).read_text()),
-               args.ami, args.initial_ami, os.getenv("SERVER_SECRET_ARN", ""), args.recovery_file)
+               args.ami, args.initial_ami, os.getenv("SERVER_SECRET_ARN", ""),
+               args.recovery_file, world_overrides)
 
 
 if __name__ == "__main__":

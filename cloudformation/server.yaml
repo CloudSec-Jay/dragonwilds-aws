@@ -58,6 +58,18 @@ Parameters:
     Type: String
     Description: ARN of a Secrets Manager secret containing the required RSDW variables
 
+  WorldSaveBucket:
+    Type: String
+    Description: Optional existing S3 bucket containing a world .sav file to import once
+    Default: ''
+    AllowedPattern: ^$|^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
+
+  WorldSaveKey:
+    Type: String
+    Description: Optional S3 object key for the world .sav file; set with WorldSaveBucket
+    Default: ''
+    AllowedPattern: ^$|^[A-Za-z0-9_%./()!*=-]+[.]sav$
+
   LogRetentionDays:
     Type: Number
     Description: Number of days to retain server system logs
@@ -85,6 +97,38 @@ Conditions:
     - !Equals
       - !Ref AlarmEmail
       - ''
+
+  HasWorldSave: !And
+    - !Not
+      - !Equals
+        - !Ref WorldSaveBucket
+        - ''
+    - !Not
+      - !Equals
+        - !Ref WorldSaveKey
+        - ''
+
+Rules:
+  WorldSaveParametersTogether:
+    Assertions:
+      - Assert: !Or
+          - !And
+            - !Equals
+              - !Ref WorldSaveBucket
+              - ''
+            - !Equals
+              - !Ref WorldSaveKey
+              - ''
+          - !And
+            - !Not
+              - !Equals
+                - !Ref WorldSaveBucket
+                - ''
+            - !Not
+              - !Equals
+                - !Ref WorldSaveKey
+                - ''
+        AssertDescription: WorldSaveBucket and WorldSaveKey must either both be set or both be empty
 
 Resources:
   DragonwildsVpc:
@@ -261,6 +305,15 @@ Resources:
                 Action:
                   - secretsmanager:GetSecretValue
                 Resource: !Ref ServerSecretArn
+              - !If
+                - HasWorldSave
+                - Sid: ReadInitialWorldSave
+                  Effect: Allow
+                  Action:
+                    - s3:GetObject
+                    - s3:GetObjectVersion
+                  Resource: !Sub arn:${AWS::Partition}:s3:::${WorldSaveBucket}/${WorldSaveKey}
+                - !Ref AWS::NoValue
               - Sid: PublishCloudWatchMetrics
                 Effect: Allow
                 Action:
@@ -400,6 +453,8 @@ Resources:
           AWS_REGION='${AWS::Region}'
           DATA_VOLUME_ID='${DragonwildsDataVolume}'
           SERVER_SECRET_ARN='${ServerSecretArn}'
+          WORLD_SAVE_BUCKET='${WorldSaveBucket}'
+          WORLD_SAVE_KEY='${WorldSaveKey}'
           BOOTSTRAP_ENV
           chmod 0600 /etc/dragonwilds/bootstrap.env
 
@@ -522,6 +577,33 @@ Resources:
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: breaching
       AlarmActions:
+        - !Ref DragonwildsAlertsTopic
+      OKActions:
+        - !Ref DragonwildsAlertsTopic
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  DragonwildsSystemRecoveryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Recover the Dragonwilds EC2 instance after a system status failure
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed_System
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref DragonwildsInstance
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Sub arn:${AWS::Partition}:automate:${AWS::Region}:ec2:recover
         - !Ref DragonwildsAlertsTopic
       OKActions:
         - !Ref DragonwildsAlertsTopic

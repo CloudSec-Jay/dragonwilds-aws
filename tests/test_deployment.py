@@ -2,6 +2,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -102,6 +103,33 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(plan.call_args.args[3]["AmiId"], OLD_AMI)
         self.assertEqual(plan.call_args.args[3]["DataVolumeSize"], "42")
         self.ec2.stop_instances.assert_not_called()
+
+    def test_world_save_parameters_are_applied(self):
+        with patch.object(deploy, "plan", return_value=("plan-id", [])) as plan, \
+                patch.object(deploy, "wait_stack"):
+            deploy.deploy(
+                self.cfn, self.ec2, "test", self.template,
+                overrides={"WorldSaveBucket": "worlds-example", "WorldSaveKey": "saves/home.sav"},
+            )
+        values = plan.call_args.args[3]
+        self.assertEqual(values["WorldSaveBucket"], "worlds-example")
+        self.assertEqual(values["WorldSaveKey"], "saves/home.sav")
+
+    def test_world_save_key_accepts_percent_encoded_filename(self):
+        pattern = self.template["Parameters"]["WorldSaveKey"]["AllowedPattern"]
+        self.assertRegex(
+            "%WinAppDataLocal%RSDragonwilds_Saved_SaveGames_homeworld.sav",
+            re.compile(pattern),
+        )
+
+    def test_system_failure_alarm_recovers_the_instance(self):
+        alarm = self.template["Resources"]["DragonwildsSystemRecoveryAlarm"]["Properties"]
+        self.assertEqual(alarm["MetricName"], "StatusCheckFailed_System")
+        self.assertEqual(alarm["TreatMissingData"], "notBreaching")
+        self.assertIn(
+            {"Fn::Sub": "arn:${AWS::Partition}:automate:${AWS::Region}:ec2:recover"},
+            alarm["AlarmActions"],
+        )
 
     def test_initial_stack_does_not_try_to_detach(self):
         with patch.object(deploy, "get_stack", return_value=None), \

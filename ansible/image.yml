@@ -208,7 +208,7 @@
 
     - name: Pre-pull Dragonwilds container image into the AMI
       ansible.builtin.command:
-        cmd: podman pull ghcr.io/runescape/rsdw-dedicated@sha256:a35b3c127f23c6b1491dfc5d85222c7f5d9c29036df53dcab6a0c6ad32924bd7
+        cmd: podman pull ghcr.io/runescape/rsdw-dedicated
       changed_when: true
 
     - name: Install the Dragonwilds bootstrap script

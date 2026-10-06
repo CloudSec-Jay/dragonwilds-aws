@@ -19,6 +19,8 @@ Infrastructure-as-code and runtime security for hosting a hardened [RuneScape: D
 
 A hardened Ubuntu 24.04 AMI is built with Packer and Ansible, then deployed via CloudFormation. The game server runs as a system Podman container managed by systemd via a Quadlet unit file, continuously monitored at the kernel level by Falco (eBPF) and File Integrity Monitoring (AIDE).
 
+![Dragonwilds AWS reference architecture](docs/diagrams/dragonwilds_architecture_v5.svg)
+
 ```
 Packer
   ├── image.yml               # Installs Podman, pre-pulls container image, configures Falco, purges bloat
@@ -101,6 +103,7 @@ The CloudWatch Agent collects logs and flushes batches every 60 seconds into Log
 - **`{instance_id}/falco-security`**: Streams from `/var/log/falco_alerts.json`.
 - **`{instance_id}/cloud-init`**: Streams from `/var/log/cloud-init-output.log`.
 - **Host Metrics**: Namespace `CWAgent` tracks CPU, memory, and disk utilization on `/` and `/srv/dragonwilds`.
+- **Automatic host recovery**: A `StatusCheckFailed_System` alarm invokes EC2 recovery after two consecutive failed one-minute checks, preserving the instance identity, Elastic IP, and attached EBS world volume while also notifying the SNS topic.
 
 ### 3. File Integrity Monitoring (AIDE)
 - Container/world-data exclusions are installed before the CIS role's first AIDE scan. Initial and final scans have a 30-minute limit and report progress every 15 seconds.
@@ -134,7 +137,7 @@ The base operating system is hardened against the **CIS Ubuntu 24.04 LTS Benchma
 
 ### Quadlet Service (`dragonwilds.container`)
 - Managed natively by systemd (`systemd/generator`).
-- **Pre-Baked Image**: The pinned image digest (`ghcr.io/runescape/rsdw-dedicated@sha256:a35b...`) is pre-pulled directly into the AMI during image baking, eliminating multi-minute image downloads on instance boot.
+- **Pre-Baked Image**: `ghcr.io/runescape/rsdw-dedicated` is pre-pulled directly into the AMI during image baking, eliminating multi-minute image downloads on instance boot.
 - **Zero-Dependency Health Check**: Uses direct procfs UDP table inspection (`grep -qi ':1E61 ' /proc/net/udp || grep -qi ':1E61 ' /proc/net/udp6`), removing dependencies on `ss` or `netstat`.
 - Restarts automatically (`Restart=always`, `RestartSec=15`).
 - Initial SteamCMD download window supported via `TimeoutStartSec=900`.
@@ -143,7 +146,8 @@ The base operating system is hardened against the **CIS Ubuntu 24.04 LTS Benchma
 - World data is stored on a separate retained gp3 EBS volume mounted at `/srv/dragonwilds`.
 - Discovers the EBS volume dynamically by serial number across `/dev/disk/by-id/` and `lsblk` NVMe identifiers.
 - Dynamically discovers the filesystem UUID and adds an `/etc/fstab` entry on first bootstrap. If replacing the filesystem on an existing instance with a different UUID, update that entry before rebooting.
-- Fetches container secrets (`RSDW_OWNER_ID`, `RSDW_WORLD_NAME`, `RSDW_PASSWORD`, `RSDW_ADMIN_PASSWORD`) from AWS Secrets Manager and writes them to ephemeral memory at `/run/dragonwilds/server.env`.
+- Fetches all ten official `RSDW_*` container settings from AWS Secrets Manager and writes them to ephemeral memory at `/run/dragonwilds/server.env`.
+- Can import an existing `.sav` from S3 before the container starts. The selected S3 object is imported once; later reboots keep the live EBS copy. If an old or automatically generated save already exists, it is moved to `RSDragonwilds/Saved/S3ImportBackups/` first.
 
 ---
 
@@ -188,7 +192,68 @@ export AWS_DEFAULT_REGION=us-east-1
 python scripts/deploy.py deploy --ami <NEW_AMI_ID>
 ```
 
-For infrastructure-only updates, omit `--ami`; the existing stack's AMI and secret ARN are preserved. `BASE_AMI_ID` is only a fallback before the first stack exists. CI fast builds also resolve their base from the deployed stack, so successful master builds become the base automatically. All four required secret fields must be JSON strings; empty passwords are supported, but line breaks and NUL bytes cannot be represented in Podman's environment-file format.
+For infrastructure-only updates, omit `--ami`; the existing stack's AMI and secret ARN are preserved. `BASE_AMI_ID` is only a fallback before the first stack exists. CI fast builds also resolve their base from the deployed stack, so successful master builds become the base automatically. All ten secret fields must be JSON strings, and line breaks or NUL bytes cannot be represented in Podman's environment-file format.
+
+### Configure ownership and server management
+
+The Secrets Manager value must be a JSON object with these exact keys:
+
+```json
+{
+  "RSDW_OWNER_ID": "your Player ID from the bottom of the in-game Settings menu",
+  "RSDW_PORT": "7777",
+  "RSDW_BEACON_PORT": "8888",
+  "RSDW_SERVER_NAME": "My Dragonwilds Server",
+  "RSDW_WORLD_NAME": "My World",
+  "RSDW_PASSWORD": "",
+  "RSDW_ADMINS": "the same Player ID used for RSDW_OWNER_ID",
+  "RSDW_ADMIN_PASSWORD": "a strong management password",
+  "RSDW_ADDITIONAL_ARGS": "",
+  "RSDW_AUTO_STOP_ON_UPDATE": "true"
+}
+```
+
+`RSDW_PASSWORD` may be empty for a public world, and `RSDW_ADDITIONAL_ARGS` may be explicitly empty. `RSDW_ADMINS` is required and is set to the same private Player ID as `RSDW_OWNER_ID`. The ports are fixed to `7777` and `8888` so they match the published container and firewall ports. `RSDW_AUTO_STOP_ON_UPDATE=true` lets systemd restart the container when the image detects a Steam update. `RSDW_ADMIN_PASSWORD` is the password used in **Pause Menu > Settings > Server Management**; `RSDW_OWNER_ID` grants owner permissions to that player. Update the existing secret before starting the new image. This example prompts without putting either password in shell history and streams the JSON directly to Secrets Manager:
+
+```bash
+read -r -p 'Player ID: ' RSDW_OWNER_ID
+read -r -p 'Server name: ' RSDW_SERVER_NAME
+read -r -p 'Default world name: ' RSDW_WORLD_NAME
+read -r -s -p 'World password (blank for public): ' RSDW_PASSWORD; printf '\n'
+read -r -s -p 'Admin password: ' RSDW_ADMIN_PASSWORD; printf '\n'
+read -r -p 'Additional server arguments (blank for none): ' RSDW_ADDITIONAL_ARGS
+
+jq -n \
+  --arg owner "$RSDW_OWNER_ID" \
+  --arg port "7777" \
+  --arg beacon "8888" \
+  --arg server "$RSDW_SERVER_NAME" \
+  --arg world "$RSDW_WORLD_NAME" \
+  --arg password "$RSDW_PASSWORD" \
+  --arg admins "$RSDW_OWNER_ID" \
+  --arg admin "$RSDW_ADMIN_PASSWORD" \
+  --arg additional "$RSDW_ADDITIONAL_ARGS" \
+  --arg autostop "true" \
+  '{RSDW_OWNER_ID:$owner,RSDW_PORT:$port,RSDW_BEACON_PORT:$beacon,RSDW_SERVER_NAME:$server,RSDW_WORLD_NAME:$world,RSDW_PASSWORD:$password,RSDW_ADMINS:$admins,RSDW_ADMIN_PASSWORD:$admin,RSDW_ADDITIONAL_ARGS:$additional,RSDW_AUTO_STOP_ON_UPDATE:$autostop}' \
+| aws secretsmanager put-secret-value \
+    --secret-id "$SERVER_SECRET_ARN" \
+    --secret-string file:///dev/stdin
+
+unset RSDW_OWNER_ID RSDW_SERVER_NAME RSDW_WORLD_NAME RSDW_PASSWORD RSDW_ADMIN_PASSWORD RSDW_ADDITIONAL_ARGS
+```
+
+### Import an existing world from S3
+
+Upload the local world `.sav` from `%LOCALAPPDATA%\RSDragonwilds\Saved\SaveGames` to an existing S3 bucket. Then deploy an AMI containing this bootstrap change and select the exact object:
+
+```bash
+python scripts/deploy.py deploy \
+  --ami <NEW_AMI_ID> \
+  --world-save-bucket <EXISTING_BUCKET_NAME> \
+  --world-save-key <PATH/TO/WORLD.sav>
+```
+
+The instance role receives read access only to that object. Import happens before the game starts. To deliberately import a different world later, deploy with a different object key; the current save is archived on the retained EBS volume before replacement. Keep the S3 source as an independent backup.
 
 A replacement has planned downtime. The script previews a CloudFormation change set, rejects world-volume replacement, shuts down the old EC2 instance normally, and removes only the attachment from the currently deployed template. It then applies the new template, which attaches the retained disk to the replacement. Do not run a direct CloudFormation AMI update against an attached world disk.
 

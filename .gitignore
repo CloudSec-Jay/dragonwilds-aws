@@ -53,3 +53,5 @@ Thumbs.db
 
 # Recovery state may contain environment-specific stack parameters
 deployment-recovery.json
+
+docs/diagrams/architecture
