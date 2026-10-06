@@ -180,6 +180,8 @@ jobs:
           BAKED_AMI_ID: ${{ steps.master-build.outputs.ami_id || steps.fast-build.outputs.ami_id }}
           BASE_AMI_ID: ${{ secrets.BASE_AMI_ID }}
           SERVER_SECRET_ARN: ${{ secrets.SERVER_SECRET_ARN }}
+          WORLD_SAVE_BUCKET: ${{ secrets.WORLD_SAVE_BUCKET }}
+          WORLD_SAVE_KEY: ${{ secrets.WORLD_SAVE_KEY }}
         run: python scripts/deploy.py deploy
 
       - name: Preserve recovery state for an interrupted deployment
