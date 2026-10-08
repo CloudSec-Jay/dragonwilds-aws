@@ -75,7 +75,7 @@
 
     - name: Configure Falco alert output
       ansible.builtin.copy:
-        src: falco-dragonwilds.yaml
+        src: ../files/falco-dragonwilds.yaml
         dest: /etc/falco/config.d/dragonwilds.yaml
         owner: root
         group: root
@@ -83,7 +83,7 @@
 
     - name: Install the Dragonwilds Falco data-directory rule
       ansible.builtin.copy:
-        src: falco-dragonwilds-rules.yaml
+        src: ../files/falco-dragonwilds-rules.yaml
         dest: /etc/falco/rules.d/dragonwilds-data.yaml
         owner: root
         group: root
@@ -91,7 +91,7 @@
 
     - name: Install Falco alert rotation
       ansible.builtin.copy:
-        src: falco-alerts.logrotate
+        src: ../files/falco-alerts.logrotate
         dest: /etc/logrotate.d/falco-alerts
         owner: root
         group: root
@@ -200,7 +200,7 @@
 
     - name: Install the Dragonwilds Quadlet
       ansible.builtin.copy:
-        src: dragonwilds.container
+        src: ../files/dragonwilds.container
         dest: /etc/containers/systemd/dragonwilds.container
         owner: root
         group: root
@@ -211,9 +211,15 @@
         cmd: podman pull ghcr.io/runescape/rsdw-dedicated
       changed_when: true
 
+    - name: Remove unreferenced container image layers from layered builds
+      ansible.builtin.command:
+        cmd: podman image prune --force
+      register: podman_prune
+      changed_when: "'reclaimed space: 0b' not in (podman_prune.stdout | lower)"
+
     - name: Install the Dragonwilds bootstrap script
       ansible.builtin.copy:
-        src: dragonwilds-bootstrap.sh
+        src: ../files/dragonwilds-bootstrap.sh
         dest: /usr/local/sbin/dragonwilds-bootstrap
         owner: root
         group: root
@@ -221,11 +227,30 @@
 
     - name: Install the Dragonwilds bootstrap service
       ansible.builtin.copy:
-        src: dragonwilds-bootstrap.service
+        src: ../files/dragonwilds-bootstrap.service
         dest: /etc/systemd/system/dragonwilds-bootstrap.service
         owner: root
         group: root
         mode: "0644"
+
+    - name: Install the Dragonwilds health reporter
+      ansible.builtin.copy:
+        src: ../files/dragonwilds-health.sh
+        dest: /usr/local/sbin/dragonwilds-health
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Install the Dragonwilds health service and timer
+      ansible.builtin.copy:
+        src: "../files/{{ item }}"
+        dest: "/etc/systemd/system/{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - dragonwilds-health.service
+        - dragonwilds-health.timer
 
     - name: Create Dragonwilds data directory
       ansible.builtin.file:
@@ -239,6 +264,11 @@
       ansible.builtin.systemd_service:
         name: dragonwilds-bootstrap.service
         daemon_reload: true
+        enabled: true
+
+    - name: Enable the Dragonwilds health timer
+      ansible.builtin.systemd_service:
+        name: dragonwilds-health.timer
         enabled: true
 
     - name: Remove image-build-only packages

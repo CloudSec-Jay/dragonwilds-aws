@@ -1,0 +1,17 @@
+---
+extends: default
+
+rules:
+  line-length:
+    max: 160
+    level: warning
+  document-start: disable
+  truthy:
+    check-keys: false
+
+ignore: |
+  ansible/roles/
+  ansible/collections/
+  .ansible/
+  .git/
+  .vscode/

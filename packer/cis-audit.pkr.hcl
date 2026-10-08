@@ -43,7 +43,7 @@ build {
   sources = ["source.amazon-ebs.cis_audit"]
 
   provisioner "ansible" {
-    playbook_file = "${path.root}/../ansible/harden.yml"
+    playbook_file = "${path.root}/../ansible/playbooks/harden.yml"
     user          = "ubuntu"
     extra_arguments = [
       "--become",

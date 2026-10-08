@@ -1,0 +1,8 @@
+---
+templates:
+  - cloudformation/**/*.yaml
+ignore_checks:
+  # Local nested-stack paths are uploaded and rewritten by `aws cloudformation package`.
+  - W3002
+regions:
+  - us-east-1

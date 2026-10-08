@@ -1,0 +1,104 @@
+---
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+
+repos:
+  # General file hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+        exclude: ^cloudformation/.*\.ya?ml$ # CloudFormation uses custom short syntax (!Sub, !Ref)
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1000]
+
+  # Shell script analysis
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        files: ^ansible/files/.*\.sh$
+
+  # YAML style and syntax
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        args: [-c, .yamllint.yml]
+        files: \.(yaml|yml)$
+
+  # CloudFormation template validation
+  - repo: https://github.com/aws-cloudformation/cfn-lint
+    rev: v1.57.2
+    hooks:
+      - id: cfn-lint
+        files: ^cloudformation/.*\.ya?ml$
+
+  # Local repository validation and test execution
+  - repo: local
+    hooks:
+      # Deployment & regression test suite
+      - id: unit-tests
+        name: Deployment regression tests
+        entry: python3 -m unittest discover -s tests -v
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      # Packer format check
+      - id: packer-fmt
+        name: Packer format check
+        entry: packer fmt -check packer/
+        language: system
+        pass_filenames: false
+        files: ^packer/.*\.pkr\.hcl$
+
+      # Packer template validation
+      - id: packer-validate
+        name: Validate Packer templates
+        entry: bash -c 'packer init packer/dragonwilds.pkr.hcl && packer validate packer/dragonwilds.pkr.hcl && packer init packer/dragonwilds-update.pkr.hcl && packer validate -var "base_ami_id=ami-12345678" packer/dragonwilds-update.pkr.hcl && packer init packer/cis-audit.pkr.hcl && packer validate -var "ami_id=ami-12345678" packer/cis-audit.pkr.hcl'
+        language: system
+        pass_filenames: false
+        files: ^packer/.*\.pkr\.hcl$
+
+      # Ansible linting
+      - id: ansible-lint
+        name: Ansible playbooks lint
+        entry: ansible-lint ansible/playbooks/bake.yml
+        language: system
+        pass_filenames: false
+        files: ^ansible/.*\.ya?ml$
+
+      # Ansible playbook syntax check
+      - id: ansible-syntax-check
+        name: Ansible bake playbook syntax
+        entry: ansible-playbook --syntax-check ansible/playbooks/bake.yml
+        language: system
+        pass_filenames: false
+        files: ^ansible/.*\.ya?ml$
+
+      # Security & vulnerability scanning (run on pre-push to keep commits fast)
+      - id: trivy-scan
+        name: Trivy Security & IaC Scan
+        entry: trivy fs . --severity CRITICAL,HIGH --exit-code 1
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: trivy-dragonwilds-image
+        name: Trivy Dragonwilds Image Scan
+        entry: >-
+          trivy image
+          --pkg-types os,library
+          --severity CRITICAL,HIGH
+          --ignore-unfixed
+          --exit-code 1
+          ghcr.io/runescape/rsdw-dedicated:latest
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

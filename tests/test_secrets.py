@@ -3,12 +3,17 @@
 from pathlib import Path
 import unittest
 
-import jq
+try:
+    import jq
+except ImportError:
+    jq = None
 
 
 class SecretFormatTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if jq is None:
+            raise unittest.SkipTest("Python 'jq' module is not installed (run 'pip install -r requirements-dev.txt')")
         script = (Path(__file__).resolve().parents[1] / "ansible/files/dragonwilds-bootstrap.sh").read_text()
         cls.program = jq.compile(script.split("jq -er '", 1)[1].split("' >", 1)[0])
 

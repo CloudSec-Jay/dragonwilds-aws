@@ -1,0 +1,14 @@
+# Development, testing, and linting dependencies for Dragonwilds AWS
+-r requirements.txt
+
+# Secret format validation and regression testing
+jq>=1.7.0
+
+# Pre-commit git hooks framework
+pre-commit>=3.7.0
+
+# Infrastructure & configuration linters and tools
+ansible>=9.0.0
+ansible-lint>=24.0.0
+cfn-lint>=1.0.0
+yamllint>=1.35.0

@@ -1,9 +1,18 @@
 # Packer build artifacts
 packer/manifest.json
 packer_cache/
+.packer.d/
 crash.log
 crash.*.log
 *.log
+
+# Generated CloudFormation and security-scan artifacts
+cloudformation/packaged*.yaml
+cloudformation/packaged*.yml
+.cfn-guard/
+.trivy/
+trivy-report.*
+*.sarif
 
 # Ansible-installed dependencies and generated reports
 .ansible/
@@ -45,9 +54,16 @@ venv/
 .ruff_cache/
 .mypy_cache/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 __pycache__/
 *.py[cod]
+.tox/
+.nox/
+build/
+dist/
+*.egg-info/
 .DS_Store
 Thumbs.db
 

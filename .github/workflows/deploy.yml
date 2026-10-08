@@ -40,40 +40,14 @@ jobs:
 
       - name: Install Linters & Ansible
         run: |
-          pip install cfn-lint ansible-lint yamllint ansible boto3 PyYAML jq
+          pip install -r requirements-dev.txt
           ansible-galaxy install -r ansible/requirements.yml
 
       - name: Set up Packer
         uses: hashicorp/setup-packer@main
 
-      - name: Run ShellCheck
-        run: |
-          shellcheck ansible/files/dragonwilds-bootstrap.sh
-
-      - name: Run deployment regression tests
-        run: python -m unittest discover -s tests -v
-
-      - name: Validate Packer templates
-        run: |
-          packer fmt -check packer/
-          packer init packer/dragonwilds-update.pkr.hcl
-          packer validate -var "base_ami_id=ami-12345678" packer/dragonwilds-update.pkr.hcl
-          packer init packer/dragonwilds.pkr.hcl
-          packer validate packer/dragonwilds.pkr.hcl
-
-      - name: Run yamllint
-        run: |
-          git ls-files -z 'ansible/*.yml' 'ansible/files/*.yaml' 'ansible/vars/*.yml' '.github/*.yml' | \
-            xargs -0 yamllint -d "{extends: default, rules: {line-length: {max: 160}, document-start: disable}}"
-
-      - name: Run cfn-lint
-        run: |
-          cfn-lint cloudformation/server.yaml
-
-      - name: Run ansible-lint
-        run: |
-          ansible-lint ansible/image.yml ansible/finalize.yml
-          ansible-playbook --syntax-check ansible/harden.yml
+      - name: Run pre-commit quality gates
+        run: python -m pre_commit run --all-files --hook-stage pre-commit
 
       - name: Run Trivy Security & IaC Scan
         uses: aquasecurity/trivy-action@v0.36.0
@@ -102,7 +76,36 @@ jobs:
         env:
           REQUESTED_BUILD: ${{ inputs.build_type || 'auto' }}
           PUSH_BEFORE: ${{ github.event.before }}
-        run: python scripts/detect_changes.py
+        run: |
+          EVENT="${{ github.event_name }}"
+          REQUESTED="${REQUESTED_BUILD}"
+          BEFORE="${PUSH_BEFORE}"
+
+          if [[ "$EVENT" == "schedule" || "$REQUESTED" == "master" ]]; then
+            echo "build_type=master" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$REQUESTED" == "fast" || "$REQUESTED" == "deploy-only" ]]; then
+            echo "build_type=${REQUESTED//-/_}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$EVENT" != "push" || -z "$BEFORE" || "$BEFORE" =~ ^0+$ ]]; then
+            echo "build_type=master" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          FILES=$(git diff --name-only "$BEFORE" HEAD -- 2>/dev/null || true)
+          if echo "$FILES" | grep -qE '^(ansible/(playbooks/(bake|harden)\.yml|vars/cis\.yml|requirements\.yml)|packer/dragonwilds\.pkr\.hcl)$'; then
+            echo "build_type=master" >> "$GITHUB_OUTPUT"
+          elif echo "$FILES" | grep -qE '^(ansible/|packer/)'; then
+            echo "build_type=fast" >> "$GITHUB_OUTPUT"
+          elif echo "$FILES" | grep -qE '^cloudformation/'; then
+            echo "build_type=deploy_only" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_type=skip" >> "$GITHUB_OUTPUT"
+          fi
 
   bake-and-deploy:
     name: Bake AMI & Deploy
@@ -123,21 +126,19 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install deployment dependencies
-        run: pip install boto3 PyYAML
-
       - name: Resolve base AMI from the deployed stack
         if: ${{ needs.detect-changes.outputs.build_type == 'fast' }}
         id: base
         env:
           BASE_AMI_ID: ${{ secrets.BASE_AMI_ID }}
         run: |
-          BASE_AMI=$(python scripts/deploy.py resolve-ami)
+          BASE_AMI=$(aws cloudformation describe-stacks \
+            --stack-name dragonwilds \
+            --query "Stacks[0].Parameters[?ParameterKey=='AmiId'].ParameterValue" \
+            --output text 2>/dev/null || echo "")
+          if [[ -z "$BASE_AMI" || "$BASE_AMI" == "None" ]]; then
+            BASE_AMI="$BASE_AMI_ID"
+          fi
           echo "ami_id=$BASE_AMI" >> "$GITHUB_OUTPUT"
 
       - name: Install Ansible Dependencies
@@ -162,7 +163,7 @@ jobs:
           NEW_AMI=$(jq -r '.builds[-1].artifact_id' packer/manifest.json | cut -d':' -f2)
           echo "ami_id=$NEW_AMI" >> "$GITHUB_OUTPUT"
 
-      # Branch B: Layered build, including the final AIDE baseline
+      # Branch B: Layered build (runtime and container updates)
       - name: Bake Fast Update AMI (Layered)
         if: ${{ needs.detect-changes.outputs.build_type == 'fast' }}
         id: fast-build
@@ -182,13 +183,40 @@ jobs:
           SERVER_SECRET_ARN: ${{ secrets.SERVER_SECRET_ARN }}
           WORLD_SAVE_BUCKET: ${{ secrets.WORLD_SAVE_BUCKET }}
           WORLD_SAVE_KEY: ${{ secrets.WORLD_SAVE_KEY }}
-        run: python scripts/deploy.py deploy
+          CFN_ARTIFACT_BUCKET: ${{ secrets.CFN_ARTIFACT_BUCKET }}
+          INSTANCE_TYPE: ${{ vars.INSTANCE_TYPE || 't3a.large' }}
+        run: |
+          TARGET_AMI="${BAKED_AMI_ID:-$BASE_AMI_ID}"
+          if [[ -z "$TARGET_AMI" ]]; then
+            TARGET_AMI=$(aws cloudformation describe-stacks \
+              --stack-name dragonwilds \
+              --query "Stacks[0].Parameters[?ParameterKey=='AmiId'].ParameterValue" \
+              --output text)
+          fi
 
-      - name: Preserve recovery state for an interrupted deployment
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: deployment-recovery
-          path: deployment-recovery.json
-          if-no-files-found: ignore
-          retention-days: 7
+          OVERRIDES=(
+            "AmiId=${TARGET_AMI}"
+            "ServerSecretArn=${SERVER_SECRET_ARN}"
+            "InstanceType=${INSTANCE_TYPE}"
+          )
+          if [[ -n "${WORLD_SAVE_BUCKET}" && -n "${WORLD_SAVE_KEY}" ]]; then
+            OVERRIDES+=("WorldSaveBucket=${WORLD_SAVE_BUCKET}" "WorldSaveKey=${WORLD_SAVE_KEY}")
+          fi
+
+          if [[ -z "$CFN_ARTIFACT_BUCKET" ]]; then
+            echo "CFN_ARTIFACT_BUCKET is required to package nested CloudFormation templates" >&2
+            exit 1
+          fi
+
+          aws cloudformation package \
+            --template-file cloudformation/server.yaml \
+            --s3-bucket "$CFN_ARTIFACT_BUCKET" \
+            --s3-prefix dragonwilds/cloudformation \
+            --output-template-file /tmp/dragonwilds-packaged.yaml
+
+          aws cloudformation deploy \
+            --stack-name dragonwilds \
+            --template-file /tmp/dragonwilds-packaged.yaml \
+            --parameter-overrides "${OVERRIDES[@]}" \
+            --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+            --no-fail-on-empty-changeset

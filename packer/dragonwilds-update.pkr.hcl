@@ -60,19 +60,9 @@ build {
   sources = ["source.amazon-ebs.dragonwilds_update"]
 
   provisioner "ansible" {
-    playbook_file   = "${path.root}/../ansible/image.yml"
+    playbook_file   = "${path.root}/../ansible/playbooks/bake.yml"
     user            = "ubuntu"
-    extra_arguments = ["--become"]
-    ansible_env_vars = [
-      "ANSIBLE_HOST_KEY_CHECKING=False",
-      "ANSIBLE_NOCOWS=1",
-    ]
-  }
-
-  provisioner "ansible" {
-    playbook_file   = "${path.root}/../ansible/finalize.yml"
-    user            = "ubuntu"
-    extra_arguments = ["--become"]
+    extra_arguments = ["--become", "--skip-tags", "hardening"]
     ansible_env_vars = [
       "ANSIBLE_HOST_KEY_CHECKING=False",
       "ANSIBLE_NOCOWS=1",

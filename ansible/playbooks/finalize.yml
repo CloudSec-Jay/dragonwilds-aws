@@ -1,0 +1,20 @@
+---
+- name: Finalize the hardened Dragonwilds image
+  hosts: all
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Remove AIDE packages and their generated database
+      ansible.builtin.apt:
+        name:
+          - aide
+          - aide-common
+        state: absent
+        purge: true
+        autoremove: true
+
+    - name: Clean APT package cache and temporary build artifacts
+      ansible.builtin.apt:
+        autoclean: true
+        clean: true

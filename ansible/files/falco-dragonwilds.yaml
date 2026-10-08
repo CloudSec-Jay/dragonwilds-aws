@@ -2,15 +2,17 @@
 # Keep Falco alerts machine-readable JSON and route to /var/log/falco_alerts.json
 # for automated CloudWatch Agent collection.
 json_output: true
-priority: notice
+# Retain informational events for Wazuh-like audit visibility. CloudWatch alarms
+# remain limited to Warning and higher by their metric filter.
+priority: informational
 
 # Use the packaged rules_files order: defaults, then /etc/falco/rules.d.
 
 stdout_output:
-  enabled: true
+  enabled: false
 
 syslog_output:
-  enabled: true
+  enabled: false
 
 file_output:
   enabled: true
@@ -20,6 +22,11 @@ file_output:
 rules:
   - disable:
       rule: "*"
+
+  # Enable Falco's vetted host and container baseline. Custom Dragonwilds
+  # rules below supplement it with endpoint-style monitoring.
+  - enable:
+      tag: maturity_stable
 
   # Custom Dragonwilds security rules
   - enable:
@@ -32,8 +39,29 @@ rules:
       rule: Use of chattr
   - enable:
       rule: Use of Python
+  - enable:
+      rule: Protected system path modified
+  - enable:
+      rule: Account or group management tool executed
+  - enable:
+      rule: Package management tool executed
+  - enable:
+      rule: Kernel module changed
+  - enable:
+      rule: Firewall or routing tool executed
+  - enable:
+      rule: Privilege or namespace tool executed
+  - enable:
+      rule: Execution from writable temporary directory
+  - enable:
+      rule: Network reconnaissance tool executed
+  - enable:
+      rule: SSM interactive shell started
+  - enable:
+      rule: Sensitive credential file opened
 
-  # Keep the existing upstream container detections enabled.
+  # Explicit names retain compatibility with packaged rulesets that predate
+  # maturity tags on these high-value container detections.
   - enable:
       rule: Terminal shell in container
   - enable:

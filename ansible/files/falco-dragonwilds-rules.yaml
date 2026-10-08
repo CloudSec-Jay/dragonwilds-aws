@@ -4,6 +4,139 @@
     - /srv/dragonwilds
     - /home/steam/rsdw-dedicated
 
+- list: dragonwilds_protected_system_paths
+  items:
+    - /boot
+    - /bin
+    - /sbin
+    - /usr/bin
+    - /usr/sbin
+    - /usr/local/bin
+    - /usr/local/sbin
+    - /etc/audit
+    - /etc/containers
+    - /etc/cron.d
+    - /etc/cron.daily
+    - /etc/cron.hourly
+    - /etc/cron.monthly
+    - /etc/cron.weekly
+    - /etc/crontab
+    - /etc/dragonwilds
+    - /etc/falco
+    - /etc/group
+    - /etc/gshadow
+    - /etc/ld.so.preload
+    - /etc/modprobe.d
+    - /etc/pam.d
+    - /etc/passwd
+    - /etc/shadow
+    - /etc/ssh
+    - /etc/sudoers
+    - /etc/sudoers.d
+    - /etc/systemd/system
+    - /etc/ufw
+    - /lib/systemd/system
+    - /root/.ssh
+    - /home/ubuntu/.ssh
+
+- list: dragonwilds_sensitive_credential_paths
+  items:
+    - /etc/shadow
+    - /etc/gshadow
+    - /etc/sudoers
+    - /etc/sudoers.d
+    - /etc/dragonwilds/bootstrap.env
+    - /run/dragonwilds/server.env
+    - /root/.ssh
+    - /home/ubuntu/.ssh
+
+- list: dragonwilds_account_tools
+  items:
+    - addgroup
+    - adduser
+    - chage
+    - chfn
+    - chpasswd
+    - chsh
+    - delgroup
+    - deluser
+    - gpasswd
+    - groupadd
+    - groupdel
+    - groupmod
+    - newusers
+    - passwd
+    - useradd
+    - userdel
+    - usermod
+    - vipw
+    - vigr
+    - visudo
+
+- list: dragonwilds_package_tools
+  items:
+    - apt
+    - apt-get
+    - apt-key
+    - dpkg
+    - pip
+    - pip3
+    - snap
+    - snapd
+
+- list: dragonwilds_firewall_tools
+  items:
+    - ip
+    - ip6tables
+    - iptables
+    - nft
+    - route
+    - tc
+    - ufw
+
+- list: dragonwilds_privilege_tools
+  items:
+    - capsh
+    - chroot
+    - nsenter
+    - setcap
+    - setpriv
+    - unshare
+
+- list: dragonwilds_network_tools
+  items:
+    - dig
+    - hping3
+    - nc
+    - ncat
+    - netcat
+    - nmap
+    - socat
+    - tcpdump
+    - telnet
+
+- list: dragonwilds_writable_execution_paths
+  items:
+    - /tmp
+    - /var/tmp
+
+- macro: dragonwilds_expected_boot_change
+  condition: >
+    (proc.aname in (cloud-init, cloud-final)
+    or proc.name in (apt, apt-get, dpkg)
+    or proc.aname in (apt, apt-get, dpkg)
+    or proc.cmdline contains /usr/local/sbin/dragonwilds-bootstrap
+    or proc.pcmdline contains /usr/local/sbin/dragonwilds-bootstrap)
+
+# The stable Falco destructive-data rule includes mkfs. Formatting a brand-new
+# retained world volume is the one expected use on this host.
+- macro: user_known_remove_data_activities
+  condition: >
+    (proc.name in (mkfs, mkfs.ext4, mke2fs)
+    and proc.pcmdline contains /usr/local/sbin/dragonwilds-bootstrap)
+  override:
+    condition: replace
+
 - rule: Dragonwilds data directory modified
   desc: A process modified the persistent Dragonwilds data directory
   condition: >
@@ -53,3 +186,137 @@
   output: "Python executed user=%user.name command=%proc.cmdline container=%container.name"
   priority: NOTICE
   tags: [dragonwilds, execution]
+
+- rule: Protected system path modified
+  desc: A host process changed an operating-system, identity, persistence, or security configuration path
+  condition: >
+    container.id=host
+    and (fs.path.name pmatch (dragonwilds_protected_system_paths)
+    or fs.path.source pmatch (dragonwilds_protected_system_paths)
+    or fs.path.target pmatch (dragonwilds_protected_system_paths))
+    and (evt.type in (mkdir, mkdirat, rename, renameat, renameat2,
+    unlink, unlinkat, rmdir, symlink, symlinkat, link, linkat,
+    chmod, fchmod, fchmodat, chown, fchown, fchownat)
+    or (evt.type in (open, openat, openat2) and evt.is_open_write=true))
+    and evt.failed=false
+    and not dragonwilds_expected_boot_change
+  output: >
+    Protected system path changed event=%evt.type path=%fs.path.name
+    source=%fs.path.source target=%fs.path.target user=%user.name
+    uid=%user.uid process=%proc.name exepath=%proc.exepath
+    parent=%proc.pname command=%proc.cmdline
+  priority: WARNING
+  tags: [dragonwilds, host, filesystem, persistence, mitre_persistence, T1543]
+
+- rule: Account or group management tool executed
+  desc: A host process invoked a local account, group, password, or sudoers management tool
+  condition: >
+    container.id=host and evt.type in (execve, execveat)
+    and evt.failed=false and proc.name in (dragonwilds_account_tools)
+  output: >
+    Account management tool executed user=%user.name uid=%user.uid
+    loginuid=%user.loginuid process=%proc.name parent=%proc.pname
+    command=%proc.cmdline
+  priority: NOTICE
+  tags: [dragonwilds, host, users, mitre_persistence, T1136]
+
+- rule: Package management tool executed
+  desc: A package manager ran on the immutable game-server host
+  condition: >
+    container.id=host and evt.type in (execve, execveat)
+    and evt.failed=false and proc.name in (dragonwilds_package_tools)
+  output: >
+    Package manager executed user=%user.name uid=%user.uid
+    loginuid=%user.loginuid process=%proc.name parent=%proc.pname
+    command=%proc.cmdline
+  priority: NOTICE
+  tags: [dragonwilds, host, software, mitre_execution, T1059]
+
+- rule: Kernel module changed
+  desc: A process loaded or unloaded a Linux kernel module
+  condition: >
+    container.id=host and evt.type in (init_module, finit_module, delete_module)
+    and evt.failed=false
+  output: >
+    Kernel module changed event=%evt.type user=%user.name uid=%user.uid
+    process=%proc.name exepath=%proc.exepath parent=%proc.pname
+    command=%proc.cmdline
+  priority: WARNING
+  tags: [dragonwilds, host, kernel, mitre_persistence, T1547.006]
+
+- rule: Firewall or routing tool executed
+  desc: A process invoked a host firewall, route, or traffic-control utility
+  condition: >
+    container.id=host and evt.type in (execve, execveat)
+    and evt.failed=false and proc.name in (dragonwilds_firewall_tools)
+    and not dragonwilds_expected_boot_change
+  output: >
+    Firewall or routing tool executed user=%user.name uid=%user.uid
+    loginuid=%user.loginuid process=%proc.name parent=%proc.pname
+    command=%proc.cmdline
+  priority: NOTICE
+  tags: [dragonwilds, host, network, mitre_defense_evasion, T1562.004]
+
+- rule: Privilege or namespace tool executed
+  desc: A process invoked a capability, chroot, or namespace manipulation utility
+  condition: >
+    evt.type in (execve, execveat) and evt.failed=false
+    and proc.name in (dragonwilds_privilege_tools)
+  output: >
+    Privilege or namespace tool executed user=%user.name uid=%user.uid
+    loginuid=%user.loginuid process=%proc.name exepath=%proc.exepath
+    parent=%proc.pname command=%proc.cmdline container=%container.name
+  priority: WARNING
+  tags: [dragonwilds, host, container, privilege_escalation, mitre_privilege_escalation, T1611]
+
+- rule: Execution from writable temporary directory
+  desc: A process executed a binary from a commonly writable temporary filesystem
+  condition: >
+    evt.type in (execve, execveat) and evt.failed=false
+    and proc.exepath pmatch (dragonwilds_writable_execution_paths)
+  output: >
+    Executable launched from writable path user=%user.name uid=%user.uid
+    loginuid=%user.loginuid process=%proc.name exepath=%proc.exepath
+    parent=%proc.pname command=%proc.cmdline container=%container.name
+  priority: WARNING
+  tags: [dragonwilds, host, container, execution, mitre_execution, T1059]
+
+- rule: Network reconnaissance tool executed
+  desc: A process invoked an interactive scanning, sniffing, or network relay utility
+  condition: >
+    evt.type in (execve, execveat) and evt.failed=false
+    and proc.name in (dragonwilds_network_tools)
+  output: >
+    Network reconnaissance tool executed user=%user.name uid=%user.uid
+    loginuid=%user.loginuid process=%proc.name exepath=%proc.exepath
+    parent=%proc.pname command=%proc.cmdline container=%container.name
+  priority: WARNING
+  tags: [dragonwilds, host, container, network, mitre_discovery, T1046]
+
+- rule: SSM interactive shell started
+  desc: An interactive shell was launched through AWS Systems Manager Session Manager
+  condition: >
+    container.id=host and evt.type in (execve, execveat)
+    and evt.failed=false and proc.name in (bash, dash, sh, zsh)
+    and proc.aname in (amazon-ssm-agen, ssm-session-wor)
+  output: >
+    SSM shell started user=%user.name uid=%user.uid loginuid=%user.loginuid
+    shell=%proc.name parent=%proc.pname command=%proc.cmdline terminal=%proc.tty
+  priority: NOTICE
+  tags: [dragonwilds, host, authentication, mitre_initial_access, T1021]
+
+- rule: Sensitive credential file opened
+  desc: An unexpected process opened a host credential or runtime-secret file for reading
+  condition: >
+    container.id=host and evt.type in (open, openat, openat2)
+    and evt.is_open_read=true and evt.failed=false
+    and fd.name pmatch (dragonwilds_sensitive_credential_paths)
+    and not proc.name in (conmon, login, passwd, podman, sshd,
+    sshd-session, su, sudo, systemd, unix_chkpwd)
+    and not dragonwilds_expected_boot_change
+  output: >
+    Sensitive credential file opened file=%fd.name user=%user.name uid=%user.uid
+    loginuid=%user.loginuid process=%proc.name exepath=%proc.exepath
+    parent=%proc.pname command=%proc.cmdline
+  priority: WARNING
+  tags: [dragonwilds, host, filesystem, credential_access, mitre_credential_access, T1555]
