@@ -143,13 +143,14 @@ code { padding: .08rem .28rem; border: 1px solid var(--line); background: var(--
 .section-heading p { margin: 0 0 .75rem; color: var(--accent); font: 500 .68rem/1 var(--mono); }
 .section-heading h2 { margin: 0; font-family: var(--serif); font-size: 1.85rem; font-weight: 400; line-height: 1.15; }
 
-.architecture, .decision-list, .security-layout, .intro-copy, .process, .check-grid, .current-state .prose {
+.decision-list, .security-layout, .intro-copy, .process, .check-grid, .current-state .prose {
   grid-column: 2;
   margin-top: 0;
 }
 
 /* Diagram is printed straight onto the paper: no frame, no fill, ink only. Edited by Claude. */
-.architecture { margin-bottom: 2.5rem; }
+/* Full content width so the diagram labels are readable. */
+.architecture { grid-column: 1 / -1; margin-top: 0; margin-bottom: 2.5rem; }
 .architecture > a { display: block; }
 .architecture img { display: block; width: 100%; height: auto; filter: grayscale(1) contrast(1.15); mix-blend-mode: multiply; }
 .architecture figcaption { display: flex; justify-content: space-between; gap: 1rem; padding: .65rem 0 0; border-top: 1px solid var(--line); color: var(--muted); font-size: .68rem; }
@@ -218,7 +219,7 @@ code { padding: .08rem .28rem; border: 1px solid var(--line); background: var(--
   .summary, .project-section { display: block; padding: 4.5rem 0; }
   .summary h2, .section-heading { margin-bottom: 2rem; }
   .architecture > a { overflow-x: auto; }
-  .architecture img { min-width: 720px; }
+  .architecture img { min-width: 960px; }
   .architecture figcaption { display: block; }
   .architecture figcaption a { display: block; margin-top: .25rem; }
   .process li { grid-template-columns: 28px 1fr; }
