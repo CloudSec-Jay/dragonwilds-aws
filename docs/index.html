@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="How I built and operate a hardened Dragonwilds dedicated server on AWS.">
+  <meta name="theme-color" content="#f4f3ef">
+  <title>Dragonwilds on AWS — Cloud Operations Engineering</title>
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <header class="site-header">
+    <a class="site-name" href="https://cloudsec-jay.github.io/cloud-ops-engineering/">Cloud Operations Engineering</a>
+    <nav aria-label="Project navigation">
+      <a href="https://cloudsec-jay.github.io/cloud-ops-engineering/#artifacts">Projects</a>
+      <a href="https://github.com/CloudSec-Jay/dragonwilds-aws">Source ↗</a>
+    </nav>
+  </header>
+
+  <main id="content">
+    <div class="breadcrumb"><a href="https://cloudsec-jay.github.io/cloud-ops-engineering/#artifacts">Projects</a><span>/</span>Dragonwilds on AWS</div>
+    <article>
+      <header class="project-header">
+        <div class="project-title">
+          <p class="overline">Infrastructure &amp; security case study</p>
+          <h1>Dragonwilds on AWS</h1>
+          <p class="lede">
+            I built a dedicated game server as a small production environment: immutable
+            images, retained state, SSM-only administration, runtime detection, and an
+            auditable deployment path.
+          </p>
+        </div>
+        <dl class="project-facts">
+          <div><dt>Platform</dt><dd>AWS · Ubuntu 24.04</dd></div>
+          <div><dt>Compute</dt><dd>EC2 · Podman</dd></div>
+          <div><dt>Provisioning</dt><dd>CloudFormation</dd></div>
+          <div><dt>Image pipeline</dt><dd>Packer · Ansible</dd></div>
+          <div><dt>Status</dt><dd><span class="status-dot"></span>Running</dd></div>
+        </dl>
+      </header>
+
+      <section class="summary" aria-labelledby="summary-title">
+        <h2 id="summary-title">The brief</h2>
+        <div class="prose">
+          <p>
+            The workload is simple—a single Dragonwilds server—but it has the same
+            operational concerns as a larger service. The host needs patching, the game
+            needs predictable restarts, player data must survive replacement, and security
+            events need somewhere to go.
+          </p>
+          <p>
+            My goal was to make the instance replaceable without making the world disposable.
+            The result separates compute from data and makes infrastructure changes through a
+            reviewed pipeline instead of one-off changes on the server.
+          </p>
+        </div>
+      </section>
+
+      <section class="project-section" aria-labelledby="architecture-title">
+        <div class="section-heading"><p>01</p><h2 id="architecture-title">Architecture</h2></div>
+        <figure class="architecture">
+          <a href="diagrams/dragonwilds_architecture_v55.svg">
+            <img src="diagrams/dragonwilds_architecture_v55.svg" alt="Architecture for the Dragonwilds AWS server, including EC2, EBS, AWS security services, CI/CD, and home-network Wazuh">
+          </a>
+          <figcaption>
+            <span>AWS workload and home SOC boundary</span>
+            <a href="diagrams/dragonwilds_architecture_v55.svg">View full size ↗</a>
+          </figcaption>
+        </figure>
+        <div class="prose architecture-copy">
+          <p>
+            CloudFormation creates the network, instance profile, EC2 host, encrypted data
+            volume, backups, log groups, dashboard, and alarms. The host runs the game through
+            a system Podman Quadlet. Only UDP 7777 and 8888 are exposed; TCP 22 is not open.
+          </p>
+          <p>
+            World data lives on a retained gp3 EBS volume mounted at
+            <code>/srv/dragonwilds</code>. That choice lets me replace the instance or AMI
+            without coupling the lifetime of the server process to the lifetime of the save.
+          </p>
+        </div>
+      </section>
+
+      <section class="project-section" aria-labelledby="decisions-title">
+        <div class="section-heading"><p>02</p><h2 id="decisions-title">Decisions and tradeoffs</h2></div>
+        <div class="decision-list">
+          <article>
+            <h3>No inbound SSH</h3>
+            <p>Administration goes through SSM Session Manager. This removes a public management port and gives AWS-native session attribution.</p>
+            <p class="tradeoff"><strong>Tradeoff:</strong> access depends on the SSM agent, instance role, and outbound AWS connectivity.</p>
+          </article>
+          <article>
+            <h3>Immutable host, persistent world</h3>
+            <p>Packer and Ansible build the host configuration. The world save stays on a separate retained EBS volume.</p>
+            <p class="tradeoff"><strong>Tradeoff:</strong> instance replacement requires careful volume detachment and attachment sequencing.</p>
+          </article>
+          <article>
+            <h3>Falco instead of AIDE</h3>
+            <p>Falco monitors process, file, identity, and network behavior with modern eBPF. AIDE is removed from the final image.</p>
+            <p class="tradeoff"><strong>Tradeoff:</strong> this favors live behavioral detection and reproducible images over a traditional on-host file database.</p>
+          </article>
+          <article>
+            <h3>Exceptions are explicit</h3>
+            <p>CIS settings are adjusted where Podman networking, Falco, SSM, or CloudWatch require different behavior.</p>
+            <p class="tradeoff"><strong>Tradeoff:</strong> the benchmark score is lower, but the remaining differences are visible and tied to workload requirements.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="project-section" aria-labelledby="security-title">
+        <div class="section-heading"><p>03</p><h2 id="security-title">Security controls</h2></div>
+        <div class="security-layout">
+          <div class="audit-result">
+            <p class="audit-label">Live Ubuntu CIS Level 1 audit</p>
+            <strong>87.11%</strong>
+            <p>500 passed · 74 failed · 17 skipped</p>
+            <small>574 evaluated checks · run through SSM on 2026-10-08</small>
+          </div>
+          <div class="prose">
+            <h3>On the instance</h3>
+            <ul>
+              <li>IMDSv2 is required with a hop limit of one.</li>
+              <li>UFW denies inbound traffic except the two UDP game ports.</li>
+              <li>Falco adds 15 workload-specific rules to its maintained baseline.</li>
+              <li>Secrets are fetched at boot and written to ephemeral runtime storage.</li>
+              <li>CloudWatch receives host health, process metrics, system logs, and Falco events.</li>
+            </ul>
+            <h3>At the AWS account level</h3>
+            <ul>
+              <li>AWS Config continuously records supported resources.</li>
+              <li>Security Hub CSPM evaluates CIS AWS Foundations Benchmark v5.</li>
+              <li>GuardDuty foundational and S3 protection are enabled.</li>
+              <li>Wazuh runs inside the home network as the external SIEM/XDR destination.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="project-section" aria-labelledby="delivery-title">
+        <div class="section-heading"><p>04</p><h2 id="delivery-title">Build and deployment</h2></div>
+        <div class="prose intro-copy">
+          <p>
+            GitHub Actions starts with the same pre-commit checks I run locally, then selects
+            a build path from the files that changed. This keeps a CloudFormation-only edit
+            from triggering an unnecessary AMI bake.
+          </p>
+        </div>
+        <ol class="process">
+          <li><span>1</span><div><h3>Validate</h3><p>ShellCheck, yamllint, cfn-lint, ansible-lint, Packer validation, unit tests, and Trivy.</p></div></li>
+          <li><span>2</span><div><h3>Choose a path</h3><p>Full master bake, fast runtime update, or infrastructure-only deployment.</p></div></li>
+          <li><span>3</span><div><h3>Build the image</h3><p>Packer invokes Ansible to configure runtime services and apply CIS hardening.</p></div></li>
+          <li><span>4</span><div><h3>Deploy and observe</h3><p>Nested CloudFormation stacks update the workload; health metrics and alarms confirm operation.</p></div></li>
+        </ol>
+      </section>
+
+      <section class="project-section" aria-labelledby="operations-title">
+        <div class="section-heading"><p>05</p><h2 id="operations-title">What I verify</h2></div>
+        <div class="check-grid">
+          <div><span>Host</span><p>Bootstrap completion, mounted world volume, running Quadlet, and UDP listener health.</p></div>
+          <div><span>Detection</span><p>Falco service health, local JSON output, and delivery to the CloudWatch log stream.</p></div>
+          <div><span>Account</span><p>AWS Config recorder status, enabled Security Hub standards, and GuardDuty detector features.</p></div>
+          <div><span>Recovery</span><p>Retained EBS behavior, AWS Backup coverage, clean shutdown, and controlled S3 save import.</p></div>
+        </div>
+      </section>
+
+      <section class="project-section current-state" aria-labelledby="state-title">
+        <div class="section-heading"><p>06</p><h2 id="state-title">Current state and next work</h2></div>
+        <div class="prose">
+          <p>
+            The workload is running, but I do not treat the current score as a finish line.
+            The 74 failed CIS checks still need classification as remediations or documented
+            exceptions. AWS Config, Security Hub, and GuardDuty were enabled in the console and
+            are not yet represented in this repository's CloudFormation templates.
+          </p>
+          <p>
+            The next useful improvement is to bring those account-level controls under code,
+            then attach sanitized evidence to each remediation without committing raw findings,
+            account identifiers, addresses, or scanner exports.
+          </p>
+        </div>
+      </section>
+
+      <footer class="project-footer">
+        <div><p class="overline">Repository</p><h2>Read the implementation</h2></div>
+        <div class="footer-links">
+          <a class="primary-link" href="https://github.com/CloudSec-Jay/dragonwilds-aws">View on GitHub ↗</a>
+          <a href="https://github.com/CloudSec-Jay/dragonwilds-aws#5-cis-benchmark-compliance-live-8711">CIS benchmark details ↗</a>
+        </div>
+      </footer>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <span>Cloud Operations Engineering</span>
+    <a href="#content">Back to top ↑</a>
+  </footer>
+</body>
+</html>
