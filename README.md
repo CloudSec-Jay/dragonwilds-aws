@@ -19,7 +19,7 @@ Infrastructure-as-code and runtime security for hosting a hardened [RuneScape: D
 
 A hardened Ubuntu 24.04 AMI is built with Packer and Ansible, then deployed via nested CloudFormation stacks. The game server runs as a system Podman container managed by systemd via a Quadlet unit file and is continuously monitored at the kernel level by Falco (eBPF). AIDE is deliberately disabled to avoid expensive scans of the immutable image and changing game data.
 
-![Dragonwilds AWS reference architecture](docs/diagrams/dragonwilds_architecture_v5.svg)
+![Dragonwilds AWS reference architecture](docs/diagrams/arch2.0.svg)
 
 ```
 Packer
