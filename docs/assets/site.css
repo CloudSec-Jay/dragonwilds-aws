@@ -273,3 +273,8 @@ code { padding: .08rem .28rem; border: 1px solid var(--line); background: var(--
   .site-header { flex-wrap: wrap; }
   .site-header nav { order: 3; width: 100%; }
 }
+
+/* Background button linking to experience and credentials on the CloudOps hub. */
+.header-actions { display: flex; align-items: center; gap: 18px; }
+.header-button { padding: 7px 14px; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); font-size: 12px; white-space: nowrap; }
+.header-button:hover { background: color-mix(in srgb, currentColor 8%, transparent); text-decoration: none; }
