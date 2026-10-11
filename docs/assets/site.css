@@ -266,3 +266,9 @@ code { padding: .08rem .28rem; border: 1px solid var(--line); background: var(--
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
 }
+
+/* Shared bar linking every portfolio Pages site; inherits this site's colors. */
+.pages-bar { display: flex; gap: 6px 22px; overflow-x: auto; padding: 9px 40px; border-bottom: 1px solid color-mix(in srgb, currentColor 22%, transparent); font: 500 10px/1.6 "JetBrains Mono", ui-monospace, monospace; letter-spacing: 1px; text-transform: uppercase; white-space: nowrap; scrollbar-width: none; }
+.pages-bar a { color: inherit; opacity: .68; text-decoration: none; }
+.pages-bar a:hover, .pages-bar a[aria-current] { opacity: 1; text-decoration: underline; text-underline-offset: 4px; }
+@media (max-width: 680px) { .pages-bar { padding: 9px 24px; } }
