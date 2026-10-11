@@ -12,7 +12,24 @@ cloudformation/packaged*.yml
 .cfn-guard/
 .trivy/
 trivy-report.*
+trivy-*-report.*
 *.sarif
+
+# Raw compliance findings and assessment evidence may contain account IDs,
+# resource ARNs, IP addresses, and other environment-specific details. Keep
+# sanitized summaries in docs/cis-remediation.md instead.
+security-reports/
+compliance-reports/
+cis-evidence/
+prowler-output/
+securityhub-findings*.json
+security-hub-findings*.json
+aws-config-snapshot*.json
+config-snapshot*.json
+inspector-cis*.json
+inspector-cis*.csv
+cis-scan-results*.json
+cis-scan-results*.csv
 
 # Ansible-installed dependencies and generated reports
 .ansible/
@@ -69,5 +86,8 @@ Thumbs.db
 
 # Recovery state may contain environment-specific stack parameters
 deployment-recovery.json
+
+# Local security review working document
+security-gap.md
 
 docs/diagrams/architecture

@@ -1,8 +1,8 @@
-# dragonwilds-aws
+# RuneScape: Dragonwilds Dedicated Server on AWS
 
 [![CI/CD Pipeline](https://github.com/CloudSec-Jay/dragonwilds-aws/actions/workflows/deploy.yml/badge.svg)](https://github.com/CloudSec-Jay/dragonwilds-aws/actions/workflows/deploy.yml)
 [![Ubuntu 24.04](https://img.shields.io/badge/Ubuntu-24.04_LTS-E95420?style=flat&logo=ubuntu&logoColor=white)](https://ubuntu.com)
-[![CIS Benchmark](https://img.shields.io/badge/CIS%20Benchmark-88.40%25-success?style=flat&logo=checkmarx&logoColor=white)](https://www.cisecurity.org/)
+[![CIS Benchmark](https://img.shields.io/badge/CIS%20Benchmark-87.11%25-success?style=flat&logo=checkmarx&logoColor=white)](https://www.cisecurity.org/)
 [![Falco eBPF](https://img.shields.io/badge/Runtime%20Security-Falco%20eBPF-00AEC7?style=flat&logo=falco&logoColor=white)](https://falco.org/)
 [![Trivy Scanned](https://img.shields.io/badge/Security-Trivy%20Scanned-1E88E5?style=flat&logo=aqua&logoColor=white)](https://trivy.dev/)
 [![Unit Tests](https://img.shields.io/badge/Unit%20Tests-Passing-brightgreen?style=flat&logo=python&logoColor=white)](https://github.com/CloudSec-Jay/dragonwilds-aws/actions)
@@ -11,7 +11,16 @@
 [![Ansible](https://img.shields.io/badge/Ansible-CIS%20Automation-EE0000?style=flat&logo=ansible&logoColor=white)](https://www.ansible.com/)
 [![Podman](https://img.shields.io/badge/Container-Podman%20Quadlet-892CA0?style=flat&logo=podman&logoColor=white)](https://podman.io/)
 
-Infrastructure-as-code and runtime security for hosting a hardened [RuneScape: Dragonwilds](https://store.steampowered.com/app/1374490/RuneScape_Dragonwilds/) dedicated server on AWS EC2.
+Infrastructure as code for running a hardened [RuneScape: Dragonwilds](https://store.steampowered.com/app/1374490/RuneScape_Dragonwilds/) dedicated server on Amazon EC2. The project builds a CIS-hardened Ubuntu AMI, deploys it through nested CloudFormation stacks, persists world data on encrypted EBS storage, and monitors the host with Falco and CloudWatch.
+
+## Highlights
+
+- No inbound SSH; administration is available only through AWS Systems Manager Session Manager.
+- Automated full and incremental AMI builds with Packer, Ansible, and GitHub Actions.
+- A system container managed by Podman Quadlet and systemd.
+- Retained, encrypted EBS world storage with optional one-time save import from Amazon S3.
+- Falco eBPF runtime detection, CloudWatch metrics and logs, alarms, dashboards, and EC2 recovery.
+- CIS Ubuntu 24.04 LTS Level 1 hardening with a verified live compliance score of **87.11%**.
 
 ---
 
@@ -41,8 +50,8 @@ Runtime Stack
   └── Container Execution
         ├── dragonwilds-bootstrap.service (EBS discovery, mount, secret retrieval)
         └── dragonwilds.container (Quadlet systemd service)
-              └── Image: ghcr.io/runescape/rsdw-dedicated (pre-baked in AMI)
-              └── Volume: /srv/dragonwilds (retained encrypted EBS)
+              ├── Image: ghcr.io/runescape/rsdw-dedicated (pre-baked in AMI)
+              ├── Volume: /srv/dragonwilds (retained encrypted EBS)
               └── Ports: 7777/udp (game), 8888/udp (beacon)
 ```
 
@@ -53,6 +62,14 @@ Runtime Stack
 ```
 .
 ├── ansible/
+│   ├── files/
+│   │   ├── dragonwilds.container          # Podman Quadlet unit file
+│   │   ├── dragonwilds-bootstrap.service  # Reboot-safe volume mount and secret injection
+│   │   ├── dragonwilds-bootstrap.sh       # EBS mount, save import, and secret retrieval
+│   │   ├── dragonwilds-health.*           # Local StatsD health reporting
+│   │   ├── falco-dragonwilds.yaml         # Falco output and rule configuration
+│   │   ├── falco-dragonwilds-rules.yaml   # Custom Falco security rules
+│   │   └── falco-alerts.logrotate         # Daily alert rotation
 │   ├── playbooks/
 │   │   ├── bake.yml                   # Unified full/fast image entry point
 │   │   ├── runtime.yml                # Runtime and monitoring configuration
@@ -68,16 +85,6 @@ Runtime Stack
 │   └── nested/
 │       ├── network.yaml               # VPC, subnet, routes, and security group
 │       └── workload.yaml              # EC2, IAM, EBS, backup, logs, and alarms
-├── ansible/files/
-│   ├── dragonwilds.container          # Podman Quadlet unit file (zero-dependency health check)
-│   ├── dragonwilds-bootstrap.service  # Reboot-safe volume mount & secret injection
-│   ├── dragonwilds-bootstrap.sh       # Attached-EBS mount, import, and secret retrieval
-│   ├── dragonwilds-health.sh          # Publishes service health to local StatsD
-│   ├── dragonwilds-health.service     # One-shot health reporter
-│   ├── dragonwilds-health.timer       # Runs health reporting every minute
-│   ├── falco-dragonwilds.yaml         # Falco JSON file output & rule whitelist
-│   ├── falco-dragonwilds-rules.yaml    # Custom Falco security rules
-│   └── falco-alerts.logrotate          # Daily alert rotation
 ├── tests/                             # CIS prerequisite and secret-format regression tests
 └── packer/
     ├── dragonwilds.pkr.hcl            # Full production AMI build (CIS + runtime, ~25m)
@@ -90,6 +97,7 @@ Runtime Stack
 ## Security Architecture
 
 ### 1. Runtime Kernel Detection (Falco eBPF)
+
 Falco runs via the `modern_ebpf` driver (`falco-modern-bpf.service`) without requiring kernel headers or compiler toolchains. The configuration enables Falco's packaged `maturity_stable` ruleset plus **15 host-specific rules**. The upstream baseline covers sensitive-file access, destructive commands, log clearing, credential searches, suspicious container execution, reverse-shell behavior, container escape techniques, and other maintained runtime detections. The custom coverage is:
 
 | Rule | Target Trigger | Mitigation / Tuning |
@@ -116,6 +124,7 @@ Falco runs via the `modern_ebpf` driver (`falco-modern-bpf.service`) without req
 - **Log Rotation**: Governed by `/etc/logrotate.d/falco-alerts` (daily rotation, 7-day local retention, compressed).
 
 ### 2. Log Telemetry (AWS CloudWatch Logs)
+
 The CloudWatch Agent publishes 60-second host, process, and health metrics and collects logs into Log Group **`/${ProjectName}/${Environment}/system`**:
 - **`{instance_id}/falco-security`**: Streams from `/var/log/falco_alerts.json`.
 - **`{instance_id}/cloud-init`**: Streams from `/var/log/cloud-init-output.log`.
@@ -126,34 +135,46 @@ The CloudWatch Agent publishes 60-second host, process, and health metrics and c
 - **Automatic host recovery**: A `StatusCheckFailed_System` alarm invokes EC2 recovery after two consecutive failed one-minute checks, preserving the instance identity, Elastic IP, and attached EBS world volume while also notifying the SNS topic.
 
 ### 3. File Integrity Monitoring
+
 AIDE is disabled in the CIS variables and purged during finalization. Falco remains the runtime file and process detection control, while AMIs are rebuilt from versioned infrastructure code instead of maintaining an on-host AIDE database.
 
 ### 4. Network & Host Hardening
+
 - **Zero Inbound SSH**: TCP port 22 is disabled. Management access is strictly via **AWS Systems Manager (SSM) Session Manager**.
 - **Strict UFW + Routing**: UFW defaults to deny incoming. Ports `7777/udp` and `8888/udp` are allowed inbound, and `ufw route allow` rules are explicitly enabled to allow Podman bridged NAT forwarding without dropped packets.
 - **IMDSv2 Enforced**: Metadata hop limit set to 1, preventing container processes from accessing the EC2 instance role credentials.
 - **Package Minimization**: Unnecessary bloat and potential living-off-the-land tools are purged during image baking:
   `git`, `ssh-import-id`, `ubuntu-drivers-common`, `usbutils`, `bpftrace`, `snapd`, `open-iscsi`, `needrestart`, `landscape-common`, `apport`, `unattended-upgrades`.
 
-### 5. CIS Benchmark Compliance (88.40%)
+### 5. CIS Benchmark Compliance (Live: 87.11%)
+
 The base operating system is hardened against the **CIS Ubuntu 24.04 LTS Benchmark (v1.0.0, Level 1 Server)** using the official `ansible-lockdown/UBUNTU24-CIS` automation with customized container overrides:
 
-| Assessment Stage | Total Controls | Failed | Passed | Compliance % |
-| :--- | :---: | :---: | :---: | :---: |
-| **Pre-Remediation** (Stock Ubuntu 24.04 AMI) | 586 | 189 | 397 | **67.75%** |
-| **Post-Remediation** (Hardened Golden Image) | 586 | 68* | **518** | **88.40%** |
+| Assessment | Total checks | Skipped | Evaluated | Failed | Passed | Compliance |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Live production EC2 instance** (SSM audit, 2026-10-08) | 591 | 17 | 574 | 74 | **500** | **87.11%** |
 
-*\*The 68 remaining non-compliant items are documented, intentional exemptions required to support the dedicated server runtime:*
+The live score uses `passed / evaluated`, where skipped checks are excluded from
+both values. It was produced directly on the running instance with Goss 0.5.0
+and the repository's Level 1 profile. The former 88.40% figure treated skipped
+checks as passes and came from a different bake-time report, so it is no longer
+used as the compliance score.
+
+Some non-compliant or excluded items reflect deliberate runtime requirements:
 - **Podman Container Support**: Preserves IP forwarding (`net.ipv4.ip_forward=1`) and bridge network namespaces.
 - **AWS SSM Session Manager**: Retains SSM agent communication channels and daemon execution without requiring inbound SSH (Port 22).
 - **CloudWatch Agent & Falco Telemetry**: Allows system metric streaming and modern eBPF kernel tracing.
 - **Clock Skew Tolerances**: Disables non-deterministic password expiration checks during short-lived Packer image builds.
+
+> [!NOTE]
+> Global AWS account-level posture and threat-detection services (CIS AWS Foundations Benchmark v5.0.0, AWS Config, Security Hub CSPM, GuardDuty) are maintained centrally in the [`cloud-ops-engineering`](../cloud-ops-engineering/) repository.
 
 ---
 
 ## Container & World Storage
 
 ### Quadlet Service (`dragonwilds.container`)
+
 - Managed natively by systemd (`systemd/generator`).
 - **Pre-Baked Image**: `ghcr.io/runescape/rsdw-dedicated` is pre-pulled directly into the AMI during image baking, eliminating multi-minute image downloads on instance boot.
 - **Zero-Dependency Health Check**: Uses direct procfs UDP table inspection (`grep -qi ':1E61 ' /proc/net/udp || grep -qi ':1E61 ' /proc/net/udp6`), removing dependencies on `ss` or `netstat`.
@@ -161,6 +182,7 @@ The base operating system is hardened against the **CIS Ubuntu 24.04 LTS Benchma
 - Initial SteamCMD download window supported via `TimeoutStartSec=900`.
 
 ### Persistent Storage & Bootstrap (`dragonwilds-bootstrap.sh`)
+
 - World data is stored on a separate retained gp3 EBS volume mounted at `/srv/dragonwilds`.
 - CloudFormation attaches the volume to the EC2 instance as `/dev/sdf`; the guest waits for its NVMe device, creates an ext4 filesystem when new, and mounts it.
 - Discovers the EBS volume dynamically by serial number across `/dev/disk/by-id/` and `lsblk` NVMe identifiers.
@@ -173,15 +195,23 @@ The base operating system is hardened against the **CIS Ubuntu 24.04 LTS Benchma
 ## Building & Deploying
 
 ### Prerequisites
-```bash
-# 1. Install Python dependencies
-pip install -r requirements-dev.txt
 
-# 2. Install pinned Ansible roles
+Install or configure the following before running local builds or deployments:
+
+- Python 3.12 or later, Packer, Ansible, the AWS CLI v2, and `jq`.
+- AWS credentials with permission to build AMIs and deploy the stack.
+- An existing private S3 bucket for packaged nested CloudFormation templates.
+- A Secrets Manager secret containing the server settings documented below.
+
+```bash
+# Install Python dependencies.
+python3 -m pip install -r requirements-dev.txt
+
+# Install the pinned Ansible role.
 ansible-galaxy install -r ansible/requirements.yml
 
-# 3. Authenticate locally with the AWS CLI before building or deploying.
-# Keep AWS configuration and credentials outside this repository.
+# Confirm that the AWS CLI can resolve your identity.
+aws sts get-caller-identity
 ```
 
 Local commands use the AWS SDK credential chain. Choose your AWS profile in your local shell or CLI configuration; CI uses GitHub OIDC and the server uses its EC2 IAM role. Do not commit profile files or exported credentials.
@@ -197,28 +227,45 @@ All AMI baking and CloudFormation deployments are automated in GitHub Actions vi
 - **Manual Trigger:** Use the **Run workflow** button in GitHub Actions to trigger `auto`, `fast`, `master`, or `deploy-only` builds at any time.
 - **Server Size:** The default `t3a.large` provides 8 GiB RAM on x86-64 at a lower price than the equivalent T3 instance. Set the GitHub Actions variable `INSTANCE_TYPE` to override it.
 
+The workflow reads these GitHub Actions repository secrets:
+
+| Name | Purpose |
+| :--- | :--- |
+| `AWS_ROLE_TO_ASSUME` | IAM role assumed by GitHub through OIDC. |
+| `AWS_REGION` | Region used for AMI builds and deployment; defaults to `us-east-1`. |
+| `CFN_ARTIFACT_BUCKET` | Existing private S3 bucket used to package the nested templates. |
+| `SERVER_SECRET_ARN` | ARN of the Secrets Manager secret containing all ten `RSDW_*` values. |
+| `BASE_AMI_ID` | Fallback hardened AMI for the first fast or deploy-only run. |
+| `WORLD_SAVE_BUCKET`, `WORLD_SAVE_KEY` | Optional S3 location for a one-time world import; set both or neither. |
+
 Local manual commands (if debugging directly with Packer or AWS CLI):
+
 ```bash
-# Optional manual Packer build:
+# Optional manual Packer build.
 packer init packer/dragonwilds.pkr.hcl
 packer build packer/dragonwilds.pkr.hcl
 
-# Nested templates must first be uploaded and rewritten to S3:
+# Set these to resources in your AWS account.
+CFN_ARTIFACT_BUCKET='your-private-artifact-bucket'
+AMI_ID='ami-0123456789abcdef0'
+SERVER_SECRET_ARN='arn:aws:secretsmanager:us-east-1:123456789012:secret:dragonwilds/example'
+
+# Upload and rewrite the nested templates before deployment.
 aws cloudformation package \
   --template-file cloudformation/server.yaml \
-  --s3-bucket <CFN_ARTIFACT_BUCKET> \
+  --s3-bucket "$CFN_ARTIFACT_BUCKET" \
   --s3-prefix dragonwilds/cloudformation \
   --output-template-file /tmp/dragonwilds-packaged.yaml
 
 aws cloudformation deploy \
   --stack-name dragonwilds \
   --template-file /tmp/dragonwilds-packaged.yaml \
-  --parameter-overrides AmiId=<AMI_ID> ServerSecretArn=<SERVER_SECRET_ARN> \
+  --parameter-overrides AmiId="$AMI_ID" ServerSecretArn="$SERVER_SECRET_ARN" \
   --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
   --no-fail-on-empty-changeset
 ```
 
-Set the GitHub Actions secret `CFN_ARTIFACT_BUCKET` to an existing private S3 bucket used to package nested templates. For infrastructure-only updates, CI preserves the existing stack's AMI and secret ARN. `BASE_AMI_ID` is only a fallback before the first stack exists. All ten secret fields must be JSON strings, and line breaks or NUL bytes cannot be represented in Podman's environment-file format.
+For infrastructure-only updates, CI reuses the AMI from the existing stack when `BASE_AMI_ID` is unset. `BASE_AMI_ID` is the fallback before the first stack exists. All ten secret fields must be JSON strings, and line breaks or NUL bytes cannot be represented in Podman's environment-file format.
 
 Moving an already-deployed monolithic stack to nested stacks is a resource migration, not an in-place rearrangement. Preserve or back up the retained world-data volume before the first nested deployment, and test the change set in a non-production stack; fixed-name resources such as the log group and backup vault may need import or a staged rename.
 
@@ -244,6 +291,7 @@ The Secrets Manager value must be a JSON object with these exact keys:
 `RSDW_PASSWORD` may be empty for a public world, and `RSDW_ADDITIONAL_ARGS` may be explicitly empty. `RSDW_ADMINS` is required and is set to the same private Player ID as `RSDW_OWNER_ID`. The ports are fixed to `7777` and `8888` so they match the published container and firewall ports. `RSDW_AUTO_STOP_ON_UPDATE=true` lets systemd restart the container when the image detects a Steam update. `RSDW_ADMIN_PASSWORD` is the password used in **Pause Menu > Settings > Server Management**; `RSDW_OWNER_ID` grants owner permissions to that player. Update the existing secret before starting the new image. This example prompts without putting either password in shell history and streams the JSON directly to Secrets Manager:
 
 ```bash
+SERVER_SECRET_ARN='<your-secret-arn>'
 read -r -p 'Player ID: ' RSDW_OWNER_ID
 read -r -p 'Server name: ' RSDW_SERVER_NAME
 read -r -p 'Default world name: ' RSDW_WORLD_NAME
@@ -275,14 +323,19 @@ unset RSDW_OWNER_ID RSDW_SERVER_NAME RSDW_WORLD_NAME RSDW_PASSWORD RSDW_ADMIN_PA
 Upload the local world `.sav` from `%LOCALAPPDATA%\RSDragonwilds\Saved\SaveGames` to an existing S3 bucket. Then deploy an AMI containing this bootstrap change and select the exact object:
 
 ```bash
+NEW_AMI_ID='ami-0123456789abcdef0'
+SERVER_SECRET_ARN='<your-secret-arn>'
+WORLD_SAVE_BUCKET='<existing-bucket-name>'
+WORLD_SAVE_KEY='path/to/world.sav'
+
 aws cloudformation deploy \
   --stack-name dragonwilds \
   --template-file /tmp/dragonwilds-packaged.yaml \
   --parameter-overrides \
-    AmiId=<NEW_AMI_ID> \
-    ServerSecretArn=<SERVER_SECRET_ARN> \
-    WorldSaveBucket=<EXISTING_BUCKET_NAME> \
-    WorldSaveKey=<PATH/TO/WORLD.sav> \
+    AmiId="$NEW_AMI_ID" \
+    ServerSecretArn="$SERVER_SECRET_ARN" \
+    WorldSaveBucket="$WORLD_SAVE_BUCKET" \
+    WorldSaveKey="$WORLD_SAVE_KEY" \
   --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
   --no-fail-on-empty-changeset
 ```
@@ -339,14 +392,14 @@ aws ec2 wait instance-stopped --instance-ids "$INSTANCE_ID"
 ### Local checks
 
 ```bash
-pip install -r requirements-dev.txt
-pre-commit install --install-hooks
+python3 -m pip install -r requirements-dev.txt
+python3 -m pre_commit install --install-hooks
 
 # Run the same quality gates as CI, including the regression tests:
-python -m pre_commit run --all-files --hook-stage pre-commit
+python3 -m pre_commit run --all-files --hook-stage pre-commit
 
 # Run the slower pre-push security hooks explicitly:
-python -m pre_commit run --all-files --hook-stage pre-push
+python3 -m pre_commit run --all-files --hook-stage pre-push
 ```
 
 The pre-push hooks use the locally installed Trivy CLI to scan both this
@@ -360,7 +413,9 @@ The tests verify CIS prerequisites and exact secret formatting. They do not depl
 ## Verification & Operational Runbook
 
 ### Inspect Runtime Security Alerts
+
 On the live EC2 host:
+
 ```bash
 # Tail local Falco alerts
 sudo tail -n 10 /var/log/falco_alerts.json
@@ -369,7 +424,8 @@ sudo tail -n 10 /var/log/falco_alerts.json
 sudo tail -n 20 /opt/aws/amazon-cloudwatch-agent/logs/amazon-cloudwatch-agent.log
 ```
 
-From AWS CLI / Workstation:
+From a workstation with AWS CLI access:
+
 ```bash
 # Query recent Falco alerts from CloudWatch Logs
 aws logs get-log-events \
@@ -379,15 +435,21 @@ aws logs get-log-events \
 ```
 
 ### Inspect CIS Benchmark Compliance Score
+
 To inspect the audit score from generated Goss benchmark reports:
+
 ```bash
 python3 -c "
 import json, glob
 report = sorted(glob.glob('ansible/audit-reports/*post_scan*.json'))[-1]
 with open(report) as f:
     s = json.load(f)['summary']
-passed = s['test-count'] - s['failed-count']
-pct = (passed / s['test-count']) * 100
-print(f'CIS Benchmark Score: {pct:.2f}% ({passed}/{s[\"test-count\"]} checks passed, {s[\"failed-count\"]} exempt)')
+total = s['test-count']
+failed = s['failed-count']
+skipped = s.get('skipped-count', 0)
+evaluated = total - skipped
+passed = evaluated - failed
+pct = (passed / evaluated) * 100
+print(f'CIS Benchmark Score: {pct:.2f}% ({passed}/{evaluated} evaluated checks passed; {failed} failed; {skipped} skipped)')
 "
 ```
